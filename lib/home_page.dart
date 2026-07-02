@@ -347,61 +347,97 @@ class _Toolbar extends StatelessWidget {
               child: Switch(value: autoDownload, onChanged: onToggleAuto),
             ),
             const SizedBox(width: 8),
-            // What to download — one merged dropdown.
             _ToolChip(
-              color: const Color(0xFFE3F0FD), // soft blue
-              child: _ChipDropdown<MediaKind>(
-                value: state.defaultKind,
-                items: {
-                  MediaKind.video: (Icons.videocam_outlined, 'Download Video'),
-                  MediaKind.audio: (Icons.music_note_outlined, 'Download Audio'),
-                },
-                onChanged: (v) => state.setDefaultKind(v),
+              color: _Palette.downloadBg,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    isAudio
+                        ? Icons.music_note_outlined
+                        : Icons.videocam_outlined,
+                    size: 17,
+                    color: _Palette.downloadFg,
+                  ),
+                  const SizedBox(width: 5),
+                  const Text('Download ',
+                      style: TextStyle(color: _Palette.downloadFg)),
+                  _ChipDropdown<MediaKind>(
+                    value: state.defaultKind,
+                    accent: _Palette.downloadFg,
+                    items: const {
+                      MediaKind.video: 'Video',
+                      MediaKind.audio: 'Audio',
+                    },
+                    onChanged: (v) => state.setDefaultKind(v),
+                  ),
+                ],
               ),
             ),
             const SizedBox(width: 8),
-            // Resolution — no label, greyed out for audio. 0 = "Best"
-            // (a null dropdown value would render blank and be unselectable).
+            // Resolution — greyed out for audio. 0 = "Best" (a null dropdown
+            // value would render blank and be unselectable).
             Opacity(
               opacity: isAudio ? 0.45 : 1,
               child: _ToolChip(
-                color: const Color(0xFFE9F7EC), // soft green
-                child: _ChipDropdown<int>(
-                  value: state.defaultQuality ?? 0,
-                  enabled: !isAudio,
-                  items: {
-                    for (final h in Quality.options)
-                      h ?? 0: (Icons.high_quality_outlined, Quality.label(h)),
-                  },
-                  showIcon: false,
-                  onChanged: (v) =>
-                      state.setDefaultQuality(v == 0 ? null : v),
+                color: _Palette.qualityBg,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.tune, size: 17, color: _Palette.qualityFg),
+                    const SizedBox(width: 5),
+                    const Text('Quality ',
+                        style: TextStyle(color: _Palette.qualityFg)),
+                    _ChipDropdown<int>(
+                      value: state.defaultQuality ?? 0,
+                      enabled: !isAudio,
+                      accent: _Palette.qualityFg,
+                      items: {
+                        for (final h in Quality.options)
+                          h ?? 0: Quality.label(h),
+                      },
+                      onChanged: (v) =>
+                          state.setDefaultQuality(v == 0 ? null : v),
+                    ),
+                  ],
                 ),
               ),
             ),
             const SizedBox(width: 8),
             // Output format: fixed MP4 for video, M4A/MP3 choice for audio.
             _ToolChip(
-              color: const Color(0xFFFDF2E0), // soft amber
-              child: isAudio
-                  ? _ChipDropdown<String>(
+              color: _Palette.formatBg,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.insert_drive_file_outlined,
+                      size: 17, color: _Palette.formatFg),
+                  const SizedBox(width: 5),
+                  const Text('Format ',
+                      style: TextStyle(color: _Palette.formatFg)),
+                  if (isAudio)
+                    _ChipDropdown<String>(
                       value: state.audioFormat,
+                      accent: _Palette.formatFg,
                       items: {
-                        for (final f in AudioFormat.options)
-                          f: (Icons.audio_file_outlined, f.toUpperCase()),
+                        for (final f in AudioFormat.options) f: f.toUpperCase(),
                       },
-                      showIcon: false,
                       onChanged: (v) => state.setAudioFormat(v),
                     )
-                  : const Padding(
+                  else
+                    const Padding(
                       padding: EdgeInsets.symmetric(vertical: 8),
                       child: Text('MP4',
-                          style: TextStyle(fontWeight: FontWeight.w600)),
+                          style: TextStyle(
+                              fontWeight: FontWeight.w600,
+                              color: _Palette.formatFg)),
                     ),
+                ],
+              ),
             ),
             const SizedBox(width: 8),
             _ToolChip(
-              color: const Color(0xFFF3E9FA), // soft purple
+              color: _Palette.folderBg,
               child: InkWell(
                 onTap: onPickFolder,
                 borderRadius: BorderRadius.circular(20),
@@ -410,11 +446,17 @@ class _Toolbar extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.folder_outlined, size: 18),
-                      const SizedBox(width: 6),
+                      const Icon(Icons.folder_outlined,
+                          size: 17, color: _Palette.folderFg),
+                      const SizedBox(width: 5),
+                      const Text('Save to ',
+                          style: TextStyle(color: _Palette.folderFg)),
                       Text(folderName,
-                          style: const TextStyle(fontWeight: FontWeight.w600)),
-                      const Icon(Icons.arrow_drop_down, size: 18),
+                          style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              color: _Palette.folderFg)),
+                      const Icon(Icons.arrow_drop_down,
+                          size: 18, color: _Palette.folderFg),
                     ],
                   ),
                 ),
@@ -422,34 +464,42 @@ class _Toolbar extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             _ToolChip(
-              color: const Color(0xFFFDE9EC), // soft pink
-              child: _ChipDropdown<String>(
-                value: state.cookieFilePath != null
-                    ? 'file'
-                    : (state.cookieBrowser ?? 'off'),
-                items: {
-                  'off': (Icons.person_off_outlined, 'No login'),
-                  'file': (
-                    Icons.cookie_outlined,
-                    state.cookieFilePath == null
-                        ? 'Cookies file…'
-                        : state.cookieFilePath!
-                            .split(RegExp(r'[/\\]'))
-                            .last,
+              color: _Palette.loginBg,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.cookie_outlined,
+                      size: 17, color: _Palette.loginFg),
+                  const SizedBox(width: 5),
+                  const Text('Login ',
+                      style: TextStyle(color: _Palette.loginFg)),
+                  _ChipDropdown<String>(
+                    value: state.cookieFilePath != null
+                        ? 'file'
+                        : (state.cookieBrowser ?? 'off'),
+                    accent: _Palette.loginFg,
+                    items: {
+                      'off': 'Off',
+                      'file': state.cookieFilePath == null
+                          ? 'Cookies file…'
+                          : state.cookieFilePath!
+                              .split(RegExp(r'[/\\]'))
+                              .last,
+                      'chrome': 'Chrome',
+                      'edge': 'Edge',
+                      'firefox': 'Firefox',
+                    },
+                    onChanged: (v) {
+                      if (v == 'file') {
+                        onPickCookieFile();
+                      } else if (v == 'off') {
+                        state.setCookieBrowser(null);
+                      } else {
+                        state.setCookieBrowser(v);
+                      }
+                    },
                   ),
-                  'chrome': (Icons.language, 'Chrome'),
-                  'edge': (Icons.language, 'Edge'),
-                  'firefox': (Icons.language, 'Firefox'),
-                },
-                onChanged: (v) {
-                  if (v == 'file') {
-                    onPickCookieFile();
-                  } else if (v == 'off') {
-                    state.setCookieBrowser(null);
-                  } else {
-                    state.setCookieBrowser(v);
-                  }
-                },
+                ],
               ),
             ),
             const Spacer(),
@@ -480,6 +530,28 @@ class _Toolbar extends StatelessWidget {
   }
 }
 
+/// Toolbar accent colors: light chip background + saturated foreground.
+class _Palette {
+  static const downloadBg = Color(0xFFE0E7FF); // indigo
+  static const downloadFg = Color(0xFF3F51B5);
+  static const qualityBg = Color(0xFFCCF5EE); // teal
+  static const qualityFg = Color(0xFF0F766E);
+  static const formatBg = Color(0xFFFEF3C7); // amber
+  static const formatFg = Color(0xFFB45309);
+  static const folderBg = Color(0xFFEDE9FE); // violet
+  static const folderFg = Color(0xFF7C3AED);
+  static const loginBg = Color(0xFFFFE4E9); // rose
+  static const loginFg = Color(0xFFBE1254);
+
+  // Row action icons.
+  static const play = Color(0xFF16A34A); // green
+  static const openFolder = Color(0xFFD97706); // amber
+  static const redownload = Color(0xFF2563EB); // blue
+  static const copy = Color(0xFF0D9488); // teal
+  static const openLink = Color(0xFF7C3AED); // violet
+  static const remove = Color(0xFFDC2626); // red
+}
+
 /// Rounded colored container for a toolbar control.
 class _ToolChip extends StatelessWidget {
   const _ToolChip({required this.color, required this.child});
@@ -499,22 +571,22 @@ class _ToolChip extends StatelessWidget {
   }
 }
 
-/// Compact dropdown used inside a [_ToolChip]: optional leading icon,
-/// bold label, no underline.
+/// Compact accent-colored dropdown used inside a [_ToolChip]: no underline,
+/// bold value text.
 class _ChipDropdown<T> extends StatelessWidget {
   const _ChipDropdown({
     required this.value,
     required this.items,
     required this.onChanged,
+    required this.accent,
     this.enabled = true,
-    this.showIcon = true,
   });
 
   final T value;
-  final Map<T, (IconData, String)> items;
+  final Map<T, String> items;
   final ValueChanged<T> onChanged;
+  final Color accent;
   final bool enabled;
-  final bool showIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -523,26 +595,22 @@ class _ChipDropdown<T> extends StatelessWidget {
         value: value,
         isDense: true,
         borderRadius: BorderRadius.circular(12),
+        iconEnabledColor: accent,
         style: TextStyle(
           fontWeight: FontWeight.w600,
           fontSize: 14,
-          color: Theme.of(context).colorScheme.onSurface,
+          color: accent,
         ),
         items: [
           for (final e in items.entries)
-            DropdownMenuItem(
-              value: e.key,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (showIcon) ...[
-                    Icon(e.value.$1, size: 18),
-                    const SizedBox(width: 6),
-                  ],
-                  Text(e.value.$2),
-                ],
-              ),
-            ),
+            DropdownMenuItem(value: e.key, child: Text(e.value)),
+        ],
+        selectedItemBuilder: (context) => [
+          // Menu entries render on a plain surface (dark accent text is fine),
+          // but the closed button must use the accent too.
+          for (final e in items.entries)
+            Center(
+                child: Text(e.value, style: TextStyle(color: accent))),
         ],
         onChanged: enabled ? (v) => onChanged(v as T) : null,
       ),
@@ -683,17 +751,38 @@ class _DownloadRow extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           if (done)
-            _IconBtn(icon: Icons.play_arrow, tip: 'Play', onTap: onPlay),
+            _IconBtn(
+                icon: Icons.play_arrow,
+                tip: 'Play',
+                color: _Palette.play,
+                onTap: onPlay),
           if (done)
-            _IconBtn(icon: Icons.folder_open, tip: 'Open folder', onTap: onFolder),
+            _IconBtn(
+                icon: Icons.folder_open,
+                tip: 'Open folder',
+                color: _Palette.openFolder,
+                onTap: onFolder),
           if (!downloading)
             _IconBtn(
                 icon: Icons.refresh,
                 tip: failed ? 'Retry' : 'Redownload',
+                color: _Palette.redownload,
                 onTap: onRedownload),
-          _IconBtn(icon: Icons.copy, tip: 'Copy URL', onTap: onCopyUrl),
-          _IconBtn(icon: Icons.open_in_new, tip: 'Open link', onTap: onLink),
-          _IconBtn(icon: Icons.delete_outline, tip: 'Remove', onTap: onRemove),
+          _IconBtn(
+              icon: Icons.copy,
+              tip: 'Copy URL',
+              color: _Palette.copy,
+              onTap: onCopyUrl),
+          _IconBtn(
+              icon: Icons.open_in_new,
+              tip: 'Open link',
+              color: _Palette.openLink,
+              onTap: onLink),
+          _IconBtn(
+              icon: Icons.delete_outline,
+              tip: 'Remove',
+              color: _Palette.remove,
+              onTap: onRemove),
         ],
       ),
     );
@@ -767,15 +856,21 @@ class _ProgressLine extends StatelessWidget {
 }
 
 class _IconBtn extends StatelessWidget {
-  const _IconBtn({required this.icon, required this.tip, required this.onTap});
+  const _IconBtn({
+    required this.icon,
+    required this.tip,
+    required this.onTap,
+    this.color,
+  });
   final IconData icon;
   final String tip;
   final VoidCallback onTap;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
     return IconButton(
-      icon: Icon(icon, size: 20),
+      icon: Icon(icon, size: 20, color: color),
       tooltip: tip,
       visualDensity: VisualDensity.compact,
       onPressed: onTap,
