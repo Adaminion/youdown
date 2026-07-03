@@ -46,6 +46,50 @@ String cleanVideoUrl(String url) {
 /// [DownloadItem].
 class DownloadService {
   String? _binPath;
+  String? _jsRuntime;
+  bool _jsRuntimeResolved = false;
+
+  /// Finds a JS runtime spec (`deno:<path>`) for yt-dlp's YouTube extractor.
+  ///
+  /// Modern yt-dlp needs a JS runtime to solve YouTube's player challenges;
+  /// without one most formats are missing and videos misreport as "not
+  /// available". We resolve deno ourselves and pass `--js-runtimes`
+  /// explicitly because the app's inherited PATH is stale when deno was
+  /// installed after login (or the app was already running). Resolved once.
+  Future<String?> findJsRuntime() async {
+    if (_jsRuntimeResolved) return _jsRuntime;
+    _jsRuntimeResolved = true;
+    final env = Platform.environment;
+    final home = env['USERPROFILE'] ?? env['HOME'] ?? '';
+    final candidates = Platform.isWindows
+        ? [
+            '${env['LOCALAPPDATA']}\\Microsoft\\WinGet\\Links\\deno.exe',
+            '$home\\.deno\\bin\\deno.exe',
+          ]
+        : [
+            '$home/.deno/bin/deno',
+            '/usr/local/bin/deno',
+            '/opt/homebrew/bin/deno',
+          ];
+    for (final c in candidates) {
+      if (await File(c).exists()) {
+        return _jsRuntime = 'deno:$c';
+      }
+    }
+    try {
+      final r = await Process.run(
+          Platform.isWindows ? 'where' : 'which', ['deno']);
+      if (r.exitCode == 0) {
+        final p = (r.stdout as String)
+            .trim()
+            .split(RegExp(r'[\r\n]+'))
+            .first
+            .trim();
+        if (p.isNotEmpty) return _jsRuntime = 'deno:$p';
+      }
+    } catch (_) {}
+    return null;
+  }
 
   /// The asset key + extracted filename for the current platform.
   ({String asset, String name}) get _binaryFor {
@@ -113,6 +157,7 @@ class DownloadService {
     String audioFormat = 'm4a',
     String? cookieBrowser,
     String? cookieFile,
+    String? jsRuntime,
   }) {
     final audio = kind == MediaKind.audio;
     final mp3 = audio && audioFormat == 'mp3';
@@ -128,6 +173,7 @@ class DownloadService {
       // selector fell back to a muxed video stream. Already-m4a downloads
       // are left untouched by ffmpeg.
       if (audio) ...['-x', '--audio-format', audioFormat, '--audio-quality', '0'],
+      if (jsRuntime != null) ...['--js-runtimes', jsRuntime],
       // YouTube login: an exported cookies.txt wins over live browser cookies.
       if (cookieFile != null) ...['--cookies', cookieFile]
       else if (cookieBrowser != null) ...['--cookies-from-browser', cookieBrowser],
@@ -161,6 +207,7 @@ class DownloadService {
     item.error = null;
     onUpdate();
 
+    final jsRuntime = await findJsRuntime();
     final args = buildArgs(
       url: item.url,
       kind: item.kind,
@@ -169,6 +216,7 @@ class DownloadService {
       audioFormat: audioFormat,
       cookieBrowser: cookieBrowser,
       cookieFile: cookieFile,
+      jsRuntime: jsRuntime,
     );
 
     String? finalFile;
@@ -209,6 +257,7 @@ class DownloadService {
           errBuffer,
           cookieBrowser: cookieBrowser,
           loginConfigured: cookieBrowser != null || cookieFile != null,
+          jsRuntimeMissing: jsRuntime == null,
         );
       }
     } catch (e) {
@@ -280,11 +329,21 @@ class DownloadService {
     List<String> err, {
     String? cookieBrowser,
     bool loginConfigured = false,
+    bool jsRuntimeMissing = false,
   }) {
     final errors = err.where((l) => l.contains('ERROR')).toList();
     var msg = errors.isNotEmpty
         ? errors.last.replaceFirst(RegExp(r'^.*ERROR:\s*'), '')
         : (err.isNotEmpty ? err.last : 'Download failed');
+
+    // Without a JS runtime yt-dlp misses most YouTube formats and even
+    // misreports videos as unavailable. Point at the actual fix.
+    if (jsRuntimeMissing &&
+        (msg.contains('not available') ||
+            msg.contains('Requested format'))) {
+      return '$msg — no JS runtime found; install Deno '
+          '(winget install DenoLand.Deno) and retry.';
+    }
 
     // Chromium locks its cookie DB while running, so live extraction fails.
     if (msg.contains('Could not copy') && msg.contains('cookie database')) {

@@ -138,7 +138,42 @@ void main() {
     });
   });
 
+  group('js runtime', () {
+    test('buildArgs passes --js-runtimes when resolved', () {
+      final a = service.buildArgs(
+        url: 'https://youtube.com/watch?v=x',
+        kind: MediaKind.video,
+        outTemplate: r'C:\dl\%(title)s.%(ext)s',
+        height: null,
+        jsRuntime: r'deno:C:\tools\deno.exe',
+      );
+      expect(a[a.indexOf('--js-runtimes') + 1], r'deno:C:\tools\deno.exe');
+      expect(args(), isNot(contains('--js-runtimes'))); // omitted when null
+    });
+
+    test('findJsRuntime returns a deno spec or null, never throws', () async {
+      final r = await service.findJsRuntime();
+      expect(r, anyOf(isNull, startsWith('deno:')));
+    });
+  });
+
   group('error summaries', () {
+    test('missing JS runtime hint wins for "not available" errors', () {
+      final msg = service.summarizeError(
+        ['ERROR: [youtube] abc: This video is not available'],
+        jsRuntimeMissing: true,
+      );
+      expect(msg, contains('install Deno'));
+      expect(msg, isNot(contains('set Login'))); // runtime hint takes priority
+    });
+
+    test('no runtime hint when a runtime is present', () {
+      final msg = service.summarizeError(
+        ['ERROR: [youtube] abc: This video is not available'],
+      );
+      expect(msg, isNot(contains('install Deno')));
+    });
+
     test('locked cookie DB becomes actionable', () {
       final msg = service.summarizeError(
         [
