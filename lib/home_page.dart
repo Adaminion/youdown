@@ -795,8 +795,7 @@ class _Thumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasThumb = item.thumbnailPath != null &&
-        File(item.thumbnailPath!).existsSync();
+    final path = item.thumbnailPath;
     return Container(
       width: 64,
       height: 40,
@@ -805,9 +804,14 @@ class _Thumb extends StatelessWidget {
         borderRadius: BorderRadius.circular(6),
       ),
       clipBehavior: Clip.antiAlias,
-      child: hasThumb
-          ? Image.file(File(item.thumbnailPath!),
+      // cacheWidth: decode at display size — source thumbnails can be 4K,
+      // and full-size decodes thrash the image cache on every list rebuild.
+      // Missing/broken files fall through to errorBuilder (no existsSync in
+      // build: synchronous disk I/O per row per frame).
+      child: path != null
+          ? Image.file(File(path),
               fit: BoxFit.cover,
+              cacheWidth: 128,
               errorBuilder: (context, error, stack) => _placeholder())
           : _placeholder(),
     );

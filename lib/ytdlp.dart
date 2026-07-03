@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -48,6 +49,30 @@ class DownloadService {
   String? _binPath;
   String? _jsRuntime;
   bool _jsRuntimeResolved = false;
+
+  /// Concurrent-download cap. Each download spawns yt-dlp + deno (+ ffmpeg);
+  /// an unbounded fan-out from pasting many links floods the CPU and the UI.
+  static const int maxConcurrent = 3;
+  int _running = 0;
+  final List<Completer<void>> _waiters = [];
+
+  Future<void> _acquireSlot() {
+    if (_running < maxConcurrent) {
+      _running++;
+      return Future.value();
+    }
+    final c = Completer<void>();
+    _waiters.add(c);
+    return c.future; // completed by _releaseSlot, slot ownership transfers
+  }
+
+  void _releaseSlot() {
+    if (_waiters.isNotEmpty) {
+      _waiters.removeAt(0).complete();
+    } else {
+      _running--;
+    }
+  }
 
   /// Finds a JS runtime spec (`deno:<path>`) for yt-dlp's YouTube extractor.
   ///
@@ -201,11 +226,25 @@ class DownloadService {
     required void Function() onUpdate,
   }) async {
     final bin = await ensureBinary();
+    await _acquireSlot(); // caps simultaneous yt-dlp pipelines
 
     item.status = DownloadStatus.downloading;
     item.progress = 0;
     item.error = null;
     onUpdate();
+
+    // yt-dlp can emit hundreds of progress lines per second; notifying the
+    // UI for each one floods the event loop and freezes the app when several
+    // downloads run at once. Progress is tracked on every line, but listener
+    // notifications are rate-limited.
+    var lastNotify = DateTime.fromMillisecondsSinceEpoch(0);
+    void onProgressTick() {
+      final now = DateTime.now();
+      if (now.difference(lastNotify).inMilliseconds >= 150) {
+        lastNotify = now;
+        onUpdate();
+      }
+    }
 
     final jsRuntime = await findJsRuntime();
     final args = buildArgs(
@@ -225,21 +264,23 @@ class DownloadService {
     try {
       final proc = await Process.start(bin, args, workingDirectory: dir);
 
+      // allowMalformed: a single non-UTF8 byte in output must not kill the
+      // listener (a dead listener blocks the pipe and hangs the download).
       proc.stdout
-          .transform(utf8.decoder)
+          .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
         if (line.startsWith('YDFILE\t')) {
           finalFile = line.substring('YDFILE\t'.length).trim();
         }
-        _maybeProgress(line, item, onUpdate);
+        _maybeProgress(line, item, onProgressTick);
       });
 
       proc.stderr
-          .transform(utf8.decoder)
+          .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
-        _maybeProgress(line, item, onUpdate);
+        _maybeProgress(line, item, onProgressTick);
         if (!line.startsWith('YDPROG')) {
           errBuffer.add(line);
           if (errBuffer.length > 40) errBuffer.removeAt(0);
@@ -263,6 +304,8 @@ class DownloadService {
     } catch (e) {
       item.status = DownloadStatus.failed;
       item.error = e.toString();
+    } finally {
+      _releaseSlot();
     }
     onUpdate();
   }
@@ -276,7 +319,10 @@ class DownloadService {
         double.tryParse(parts[3]); // estimate fallback
     if (done != null && total != null && total > 0) {
       final p = (done / total).clamp(0.0, 1.0);
-      if ((p - item.progress).abs() >= 0.005 || p >= 1.0) {
+      // No `p >= 1.0` shortcut here: fragmented downloads sit at 100% for
+      // many lines and would fire an update per line. Completion is
+      // reported once via the exit path.
+      if ((p - item.progress).abs() >= 0.005) {
         item.progress = p;
         onUpdate();
       }
