@@ -214,6 +214,22 @@ class DownloadService {
     ];
   }
 
+  /// Validates configured paths before spawning yt-dlp. A stale path (e.g. a
+  /// cookies file on an unplugged drive) makes yt-dlp itself crash with a
+  /// cryptic PyInstaller error, so fail fast with a message that names the
+  /// problem instead.
+  @visibleForTesting
+  Future<String?> preflight({required String dir, String? cookieFile}) async {
+    if (!await Directory(dir).exists()) {
+      return 'Download folder not found: $dir — choose another under "Save to".';
+    }
+    if (cookieFile != null && !await File(cookieFile).exists()) {
+      return 'Cookies file not found: $cookieFile — if it\'s on a removable '
+          'drive, reconnect it, or re-select the file under Login.';
+    }
+    return null;
+  }
+
   /// Runs the download, mutating [item] in place and calling [onUpdate] on every
   /// progress tick and on completion.
   Future<void> run(
@@ -226,6 +242,15 @@ class DownloadService {
     required void Function() onUpdate,
   }) async {
     final bin = await ensureBinary();
+
+    final pathError = await preflight(dir: dir, cookieFile: cookieFile);
+    if (pathError != null) {
+      item.status = DownloadStatus.failed;
+      item.error = pathError;
+      onUpdate();
+      return;
+    }
+
     await _acquireSlot(); // caps simultaneous yt-dlp pipelines
 
     item.status = DownloadStatus.downloading;
@@ -247,21 +272,34 @@ class DownloadService {
     }
 
     final jsRuntime = await findJsRuntime();
-    final args = buildArgs(
-      url: item.url,
-      kind: item.kind,
-      outTemplate: '$dir${Platform.pathSeparator}%(title)s.%(ext)s',
-      height: height,
-      audioFormat: audioFormat,
-      cookieBrowser: cookieBrowser,
-      cookieFile: cookieFile,
-      jsRuntime: jsRuntime,
-    );
 
     String? finalFile;
+    File? tmpCookies;
     final errBuffer = <String>[];
 
     try {
+      // yt-dlp saves the cookie jar back to the file on exit; concurrent
+      // downloads sharing one cookies.txt race each other (crashes/corrupted
+      // file). Each run gets its own throwaway copy; the original is never
+      // written to.
+      var runCookieFile = cookieFile;
+      if (cookieFile != null) {
+        final support = await getApplicationSupportDirectory();
+        tmpCookies = File('${support.path}/cookies_run_${item.id}.txt');
+        await File(cookieFile).copy(tmpCookies.path);
+        runCookieFile = tmpCookies.path;
+      }
+
+      final args = buildArgs(
+        url: item.url,
+        kind: item.kind,
+        outTemplate: '$dir${Platform.pathSeparator}%(title)s.%(ext)s',
+        height: height,
+        audioFormat: audioFormat,
+        cookieBrowser: cookieBrowser,
+        cookieFile: runCookieFile,
+        jsRuntime: jsRuntime,
+      );
       final proc = await Process.start(bin, args, workingDirectory: dir);
 
       // allowMalformed: a single non-UTF8 byte in output must not kill the
@@ -306,6 +344,9 @@ class DownloadService {
       item.error = e.toString();
     } finally {
       _releaseSlot();
+      try {
+        await tmpCookies?.delete();
+      } catch (_) {}
     }
     onUpdate();
   }
@@ -381,6 +422,20 @@ class DownloadService {
     var msg = errors.isNotEmpty
         ? errors.last.replaceFirst(RegExp(r'^.*ERROR:\s*'), '')
         : (err.isNotEmpty ? err.last : 'Download failed');
+
+    // A PyInstaller bootloader line ("[PYI-…] Failed to execute script")
+    // means yt-dlp itself crashed; the real Python exception is a few lines
+    // up in the traceback — show that instead.
+    if (msg.contains('Failed to execute script')) {
+      final exc = err.lastWhere(
+        (l) => RegExp(r'^\s*\w+(Error|Exception)\b').hasMatch(l),
+        orElse: () => '',
+      );
+      msg = exc.isNotEmpty
+          ? 'yt-dlp crashed: ${exc.trim()}'
+          : 'yt-dlp crashed unexpectedly — check that the download folder '
+              'and cookies file paths still exist.';
+    }
 
     // Without a JS runtime yt-dlp misses most YouTube formats and even
     // misreports videos as unavailable. Point at the actual fix.

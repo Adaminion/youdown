@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:youdown/models.dart';
 import 'package:youdown/ytdlp.dart';
@@ -212,12 +214,57 @@ void main() {
       expect(msg, isNot(contains('set Login')));
     });
 
+    test('PYI crash surfaces the real Python exception', () {
+      final msg = service.summarizeError([
+        '  File "yt_dlp\\cookies.py", line 1305, in open',
+        "FileNotFoundError: [Errno 2] No such file or directory: 'F:\\\\downloads\\\\cookies.txt'",
+        "[PYI-4284:ERROR] Failed to execute script '__main__' due to unhandled exception!",
+      ]);
+      expect(msg, contains('yt-dlp crashed'));
+      expect(msg, contains('FileNotFoundError'));
+      expect(msg, isNot(contains('PYI')));
+    });
+
+    test('PYI crash without traceback gets a generic path hint', () {
+      final msg = service.summarizeError([
+        "[PYI-1:ERROR] Failed to execute script '__main__' due to unhandled exception!",
+      ]);
+      expect(msg, contains('check that the download folder'));
+    });
+
     test('plain errors pass through', () {
       expect(
         service.summarizeError(['ERROR: unsupported URL: foo']),
         'unsupported URL: foo',
       );
       expect(service.summarizeError([]), 'Download failed');
+    });
+  });
+
+  group('preflight', () {
+    test('missing download folder is reported', () async {
+      final msg = await service.preflight(dir: r'Q:\no\such\folder');
+      expect(msg, contains('Download folder not found'));
+    });
+
+    test('missing cookies file is reported', () async {
+      final dir = await Directory.systemTemp.createTemp('youdown_test');
+      addTearDown(() => dir.delete(recursive: true));
+      final msg = await service.preflight(
+          dir: dir.path, cookieFile: r'F:\downloads\cookies.txt');
+      expect(msg, contains('Cookies file not found'));
+      expect(msg, contains('removable'));
+    });
+
+    test('valid paths pass', () async {
+      final dir = await Directory.systemTemp.createTemp('youdown_test');
+      addTearDown(() => dir.delete(recursive: true));
+      final cookies = File('${dir.path}/cookies.txt');
+      await cookies.writeAsString('# Netscape HTTP Cookie File\n');
+      expect(
+          await service.preflight(dir: dir.path, cookieFile: cookies.path),
+          isNull);
+      expect(await service.preflight(dir: dir.path), isNull);
     });
   });
 }
