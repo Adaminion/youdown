@@ -93,6 +93,64 @@ class _HomePageState extends State<HomePage> {
 
   // ---- row actions ----
 
+  Future<void> _handleDownloadError(DownloadItem item) async {
+    // Check if error is about a missing path, and offer to fix it.
+    if (item.error == null) return;
+    final err = item.error!;
+
+    if (err.contains('Download folder not found')) {
+      if (!mounted) return;
+      final result = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Download Folder Not Found'),
+          content: Text(err),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'change'),
+              child: const Text('Change Folder'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      );
+      if (result == 'change') {
+        await _pickFolder();
+      }
+    } else if (err.contains('Cookies file not found')) {
+      if (!mounted) return;
+      final result = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Cookies File Not Found'),
+          content: Text(err),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'change'),
+              child: const Text('Re-select File'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'disable'),
+              child: const Text('Turn Off Login'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      );
+      if (result == 'change') {
+        await _pickCookieFile();
+      } else if (result == 'disable') {
+        state.setCookieBrowser(null);
+      }
+    }
+  }
+
   Future<void> _copyUrl(DownloadItem item) async {
     await Clipboard.setData(ClipboardData(text: item.url));
     _toast('Link copied');
@@ -152,11 +210,18 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _pickFolder() async {
-    final dir = await FilePicker.getDirectoryPath(
-      dialogTitle: 'Choose download folder',
-      initialDirectory: state.downloadDir,
-    );
-    if (dir != null) state.setDownloadDir(dir);
+    try {
+      final dir = await FilePicker.getDirectoryPath(
+        dialogTitle: 'Choose download folder',
+        initialDirectory: state.downloadDir,
+      );
+      if (dir != null) {
+        state.setDownloadDir(dir);
+        _toast('Save folder changed to: ${dir.split(RegExp(r"[/\\]")).last}');
+      }
+    } catch (e) {
+      _toast('Failed to change folder: $e');
+    }
   }
 
   Future<void> _pickCookieFile() async {
@@ -290,7 +355,11 @@ class _HomePageState extends State<HomePage> {
         onFolder: () => _revealFolder(items[i]),
         onLink: () => _openLink(items[i]),
         onCopyUrl: () => _copyUrl(items[i]),
-        onRedownload: () => _start(items[i]),
+        onRedownload: () async {
+          await _handleDownloadError(items[i]);
+          if (items[i].status == DownloadStatus.failed) return; // error dialog handled it
+          await _start(items[i]);
+        },
         onRemove: () => state.removeItem(items[i]),
       ),
     );

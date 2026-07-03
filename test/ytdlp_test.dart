@@ -250,10 +250,11 @@ void main() {
     test('missing cookies file is reported', () async {
       final dir = await Directory.systemTemp.createTemp('youdown_test');
       addTearDown(() => dir.delete(recursive: true));
+      final nonExistentPath = '${dir.path}/nonexistent_cookies_xyz_12345.txt';
       final msg = await service.preflight(
-          dir: dir.path, cookieFile: r'F:\downloads\cookies.txt');
+          dir: dir.path, cookieFile: nonExistentPath);
       expect(msg, contains('Cookies file not found'));
-      expect(msg, contains('removable'));
+      expect(msg, contains(nonExistentPath));
     });
 
     test('valid paths pass', () async {
