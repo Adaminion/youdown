@@ -1,4 +1,7 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:youdown/app_state.dart';
+import 'package:youdown/main.dart';
 import 'package:youdown/models.dart';
 
 void main() {
@@ -41,6 +44,38 @@ void main() {
       uploader: 'klips.funfun',
     );
     expect(item.subtitle, '00:42 · 6.0 MB · MP4 · 720p · 30fps · klips.funfun');
+  });
+
+  test('abbreviatePath keeps short paths, shortens long ones', () {
+    expect(abbreviatePath(r'C:\dl'), r'C:\dl');
+    expect(abbreviatePath(r'C:\Users\adamt\Downloads'), r'C:\Use...ads');
+    expect(abbreviatePath('/home/adam/Videos/youtube'), '/home/...ube');
+  });
+
+  test('versionFromPubspec reads version, drops the build number', () {
+    expect(versionFromPubspec('name: x\nversion: 1.3.12+7\n'), '1.3.12');
+    expect(versionFromPubspec('name: x\nversion: 1.2.0\n'), '1.2.0');
+    expect(versionFromPubspec('name: x\n'), '');
+    // must not match the "like 1.2.43" example in pubspec comments
+    expect(versionFromPubspec('# A version number is 1.2.43\nversion: 2.0.0+1'),
+        '2.0.0');
+  });
+
+  testWidgets('version overlay and abbreviated Save-to path render',
+      (tester) async {
+    final state = AppState();
+    state.downloadDir = r'C:\Users\adamt\Downloads';
+    await tester.pumpWidget(YouDownApp(state: state, version: '9.9.9'));
+
+    expect(find.text('9.9.9'), findsOneWidget); // bottom-right overlay
+    expect(find.text(r'C:\Use...ads'), findsOneWidget); // Save-to chip
+
+    // Full path is available as the chip's tooltip.
+    expect(
+      find.byWidgetPredicate(
+          (w) => w is Tooltip && w.message == r'C:\Users\adamt\Downloads'),
+      findsOneWidget,
+    );
   });
 
   test('quality labels', () {

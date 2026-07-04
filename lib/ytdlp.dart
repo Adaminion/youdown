@@ -304,7 +304,7 @@ class DownloadService {
 
       // allowMalformed: a single non-UTF8 byte in output must not kill the
       // listener (a dead listener blocks the pipe and hangs the download).
-      proc.stdout
+      final stdoutSub = proc.stdout
           .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
@@ -314,7 +314,7 @@ class DownloadService {
         _maybeProgress(line, item, onProgressTick);
       });
 
-      proc.stderr
+      final stderrSub = proc.stderr
           .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
@@ -326,10 +326,27 @@ class DownloadService {
       });
 
       final code = await proc.exitCode;
+      // exitCode can complete before the last buffered pipe lines are
+      // delivered; without this wait the YDFILE line is often missed and the
+      // item ends up "done" with no file path recorded.
+      await Future.wait([
+        stdoutSub.asFuture<void>().catchError((_) {}),
+        stderrSub.asFuture<void>().catchError((_) {}),
+      ]);
       if (code == 0) {
         await _applyMetadata(item, finalFile);
-        item.progress = 1.0;
-        item.status = DownloadStatus.done;
+        final onDisk =
+            item.filePath != null && await File(item.filePath!).exists();
+        if (onDisk) {
+          item.progress = 1.0;
+          item.status = DownloadStatus.done;
+        } else {
+          // exit 0 but nothing to show: don't claim success over a missing file.
+          item.status = DownloadStatus.failed;
+          item.error =
+              'Finished, but no output file was found in $dir — check free '
+              'space and retry.';
+        }
       } else {
         item.status = DownloadStatus.failed;
         item.error = summarizeError(
@@ -447,9 +464,12 @@ class DownloadService {
     }
 
     // Chromium locks its cookie DB while running, so live extraction fails.
+    // "Closing the window" is usually not enough: Chrome/Edge keep background
+    // processes alive that hold the lock.
     if (msg.contains('Could not copy') && msg.contains('cookie database')) {
       final b = cookieBrowser ?? 'the browser';
-      return 'Could not read $b cookies — close $b completely and retry, '
+      return 'Could not read $b cookies — close $b completely (also its '
+          'background processes: system tray icon / Task Manager) and retry, '
           'or switch Login to a cookies.txt file.';
     }
     // Chrome/Edge App-Bound Encryption: yt-dlp often can't decrypt live
@@ -459,6 +479,22 @@ class DownloadService {
       return "Couldn't decrypt $b cookies (Chrome/Edge encryption). Switch "
           'Login to a cookies.txt file exported with a "Get cookies.txt" '
           'browser extension.';
+    }
+    // App-bound (v20) cookies decrypt to garbage: yt-dlp only warns, then
+    // YouTube rejects the login ("Sign in to confirm…"). Scan the whole
+    // stderr tail for the decrypt warnings, not just the final ERROR line.
+    final chromiumLogin = cookieBrowser == 'chrome' || cookieBrowser == 'edge';
+    if (chromiumLogin &&
+        (msg.contains('Sign in') || msg.contains('cookies')) &&
+        err.any((l) =>
+            l.contains('v20') ||
+            l.contains('decrypt') ||
+            l.contains('App Bound') ||
+            l.contains('app-bound'))) {
+      return "YouTube didn't accept $cookieBrowser cookies — Chrome/Edge "
+          'encrypt them on Windows (app-bound encryption), even when the '
+          'browser is closed. Switch Login to a cookies.txt file exported '
+          'with a "Get cookies.txt" extension, or use Firefox.';
     }
     // Auth-shaped failures: point at the Login setting if it's off.
     if (!loginConfigured &&

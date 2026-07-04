@@ -14,8 +14,7 @@ import 'ytdlp.dart';
 enum SortMode { newest, oldest, title, size }
 
 int _idCounter = 0;
-String _newId() =>
-    '${DateTime.now().microsecondsSinceEpoch}_${_idCounter++}';
+String _newId() => '${DateTime.now().microsecondsSinceEpoch}_${_idCounter++}';
 
 bool _isValidUrl(String s) {
   final uri = Uri.tryParse(s.trim());
@@ -55,14 +54,20 @@ class _HomePageState extends State<HomePage> {
         .split(RegExp(r'[\r\n]+'))
         .map((e) => e.trim())
         .where(_isValidUrl)
-        .map(cleanVideoUrl) // single video only — strip playlist/tracking params
+        .map(
+          cleanVideoUrl,
+        ) // single video only — strip playlist/tracking params
         .toList();
     if (urls.isEmpty) {
       _toast('No valid link found');
       return;
     }
     for (final url in urls) {
-      final item = DownloadItem(id: _newId(), url: url, kind: state.defaultKind);
+      final item = DownloadItem(
+        id: _newId(),
+        url: url,
+        kind: state.defaultKind,
+      );
       state.addItem(item);
       if (_autoDownload) _start(item);
     }
@@ -93,13 +98,25 @@ class _HomePageState extends State<HomePage> {
 
   // ---- row actions ----
 
-  Future<void> _handleDownloadError(DownloadItem item) async {
-    // Check if error is about a missing path, and offer to fix it.
-    if (item.error == null) return;
-    final err = item.error!;
+  /// Redownload always runs with the *current* settings (download folder,
+  /// login), then offers a fix-it dialog if it failed on a known problem —
+  /// and retries immediately when the user fixes it.
+  Future<void> _redownload(DownloadItem item) async {
+    await _start(item);
+    if (item.status == DownloadStatus.failed && mounted) {
+      final fixed = await _offerErrorFix(item);
+      if (fixed) await _start(item);
+    }
+  }
+
+  /// Offers a fix for known failure causes (missing folder, missing or
+  /// unreadable cookies). Returns true when the user changed something and
+  /// the download should be retried right away.
+  Future<bool> _offerErrorFix(DownloadItem item) async {
+    final err = item.error;
+    if (err == null || !mounted) return false;
 
     if (err.contains('Download folder not found')) {
-      if (!mounted) return;
       final result = await showDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -117,11 +134,11 @@ class _HomePageState extends State<HomePage> {
           ],
         ),
       );
-      if (result == 'change') {
-        await _pickFolder();
-      }
-    } else if (err.contains('Cookies file not found')) {
-      if (!mounted) return;
+      if (result == 'change') return _pickFolder();
+      return false;
+    }
+
+    if (err.contains('Cookies file not found')) {
       final result = await showDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -143,12 +160,52 @@ class _HomePageState extends State<HomePage> {
           ],
         ),
       );
-      if (result == 'change') {
-        await _pickCookieFile();
-      } else if (result == 'disable') {
+      if (result == 'change') return _pickCookieFile();
+      if (result == 'disable') {
         state.setCookieBrowser(null);
+        return true;
       }
+      return false;
     }
+
+    // Browser cookies unreadable (locked DB / Chrome-Edge encryption).
+    if (state.cookieBrowser != null &&
+        err.contains('cookies') &&
+        (err.contains('decrypt') ||
+            err.contains('close ') ||
+            err.contains('cookies.txt'))) {
+      final result = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Browser Login Failed'),
+          content: Text(
+            '$err\n\nAn exported cookies.txt file is the most '
+            'reliable way to stay logged in.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'file'),
+              child: const Text('Use cookies.txt…'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'disable'),
+              child: const Text('Turn Off Login'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      );
+      if (result == 'file') return _pickCookieFile();
+      if (result == 'disable') {
+        state.setCookieBrowser(null);
+        return true;
+      }
+      return false;
+    }
+    return false;
   }
 
   Future<void> _copyUrl(DownloadItem item) async {
@@ -157,8 +214,15 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _play(DownloadItem item) async {
-    if (item.filePath == null) return;
-    final res = await OpenFilex.open(item.filePath!);
+    final path = item.filePath;
+    if (path == null || !File(path).existsSync()) {
+      _toast(
+        'File not found — it may have been moved or deleted. '
+        'Use Redownload to fetch it again.',
+      );
+      return;
+    }
+    final res = await OpenFilex.open(path);
     if (res.type != ResultType.done) _toast('Could not open file');
   }
 
@@ -169,14 +233,35 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _revealFolder(DownloadItem item) async {
     final path = item.filePath;
-    if (path == null) return;
-    if (Platform.isWindows) {
-      await Process.run('explorer', ['/select,', path]);
-    } else if (Platform.isMacOS) {
-      await Process.run('open', ['-R', path]);
-    } else {
-      await Process.run('xdg-open', [File(path).parent.path]);
+    if (path != null && File(path).existsSync()) {
+      if (Platform.isWindows) {
+        // /select, and the path must be ONE argument: as separate args the
+        // command line gets a space after the comma and Explorer silently
+        // opens the default (Documents) folder instead.
+        await Process.run('explorer.exe', ['/select,$path']);
+      } else if (Platform.isMacOS) {
+        await Process.run('open', ['-R', path]);
+      } else {
+        await Process.run('xdg-open', [File(path).parent.path]);
+      }
+      return;
     }
+    // File gone (moved/deleted/never landed): open its folder — or the
+    // current download folder — instead of doing nothing.
+    var dir = path != null ? File(path).parent.path : state.downloadDir;
+    if (!Directory(dir).existsSync()) dir = state.downloadDir;
+    if (!Directory(dir).existsSync()) {
+      _toast('Folder not found: $dir');
+      return;
+    }
+    if (Platform.isWindows) {
+      await Process.run('explorer.exe', [dir]);
+    } else if (Platform.isMacOS) {
+      await Process.run('open', [dir]);
+    } else {
+      await Process.run('xdg-open', [dir]);
+    }
+    if (path != null) _toast('File not found — opened the folder instead');
   }
 
   // ---- import / export / settings ----
@@ -209,7 +294,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  Future<void> _pickFolder() async {
+  /// Returns true when a new folder was actually chosen.
+  Future<bool> _pickFolder() async {
     try {
       final dir = await FilePicker.getDirectoryPath(
         dialogTitle: 'Choose download folder',
@@ -217,23 +303,72 @@ class _HomePageState extends State<HomePage> {
       );
       if (dir != null) {
         state.setDownloadDir(dir);
-        _toast('Save folder changed to: ${dir.split(RegExp(r"[/\\]")).last}');
+        _toast('Save folder changed to: $dir');
+        return true;
       }
     } catch (e) {
       _toast('Failed to change folder: $e');
     }
+    return false;
   }
 
-  Future<void> _pickCookieFile() async {
+  /// Returns true when a cookies file was actually chosen.
+  Future<bool> _pickCookieFile() async {
     final res = await FilePicker.pickFiles(
       dialogTitle: 'Choose exported cookies.txt',
       type: FileType.custom,
       allowedExtensions: ['txt'],
     );
     final path = res?.files.single.path;
-    if (path == null) return;
+    if (path == null) return false;
     state.setCookieFile(path);
     _toast('Login set: cookies file');
+    return true;
+  }
+
+  /// Handles picking a browser in the Login dropdown. On Windows, Chrome and
+  /// Edge cookies are app-bound encrypted and reading them almost always
+  /// fails (even with the browser closed) — warn up front and steer to a
+  /// cookies.txt export instead of letting downloads fail later.
+  Future<void> _selectBrowserLogin(String browser) async {
+    if (Platform.isWindows && (browser == 'chrome' || browser == 'edge')) {
+      final name = browser == 'chrome' ? 'Chrome' : 'Edge';
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text('$name login usually fails on Windows'),
+          content: Text(
+            '$name encrypts its cookies (app-bound encryption), so reading '
+            'them typically fails even when $name is fully closed.\n\n'
+            'Reliable options:\n'
+            '• Export a cookies.txt file with a browser extension such as '
+            '"Get cookies.txt LOCALLY" while logged in to YouTube, or\n'
+            '• Use Firefox login instead.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'file'),
+              child: const Text('Use cookies.txt…'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'anyway'),
+              child: Text('Try $name anyway'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      );
+      if (choice == 'file') {
+        await _pickCookieFile();
+      } else if (choice == 'anyway') {
+        state.setCookieBrowser(browser);
+      }
+      return;
+    }
+    state.setCookieBrowser(browser);
   }
 
   void _toast(String msg) {
@@ -269,9 +404,11 @@ class _HomePageState extends State<HomePage> {
     if (_search.isNotEmpty) {
       final q = _search.toLowerCase();
       list = list
-          .where((i) =>
-              i.displayTitle.toLowerCase().contains(q) ||
-              i.url.toLowerCase().contains(q))
+          .where(
+            (i) =>
+                i.displayTitle.toLowerCase().contains(q) ||
+                i.url.toLowerCase().contains(q),
+          )
           .toList();
     }
     switch (_sort) {
@@ -280,10 +417,15 @@ class _HomePageState extends State<HomePage> {
       case SortMode.oldest:
         list.sort((a, b) => a.addedAt.compareTo(b.addedAt));
       case SortMode.title:
-        list.sort((a, b) =>
-            a.displayTitle.toLowerCase().compareTo(b.displayTitle.toLowerCase()));
+        list.sort(
+          (a, b) => a.displayTitle.toLowerCase().compareTo(
+            b.displayTitle.toLowerCase(),
+          ),
+        );
       case SortMode.size:
-        list.sort((a, b) => (b.fileSizeBytes ?? 0).compareTo(a.fileSizeBytes ?? 0));
+        list.sort(
+          (a, b) => (b.fileSizeBytes ?? 0).compareTo(a.fileSizeBytes ?? 0),
+        );
     }
     return list;
   }
@@ -307,6 +449,7 @@ class _HomePageState extends State<HomePage> {
                   onPaste: _pasteLink,
                   onPickFolder: _pickFolder,
                   onPickCookieFile: _pickCookieFile,
+                  onSelectBrowser: _selectBrowserLogin,
                   onImport: _import,
                   onExport: _export,
                 ),
@@ -333,8 +476,11 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.download_for_offline_outlined,
-                size: 56, color: Colors.grey.shade400),
+            Icon(
+              Icons.download_for_offline_outlined,
+              size: 56,
+              color: Colors.grey.shade400,
+            ),
             const SizedBox(height: 12),
             Text(
               state.items.isEmpty
@@ -355,11 +501,7 @@ class _HomePageState extends State<HomePage> {
         onFolder: () => _revealFolder(items[i]),
         onLink: () => _openLink(items[i]),
         onCopyUrl: () => _copyUrl(items[i]),
-        onRedownload: () async {
-          await _handleDownloadError(items[i]);
-          if (items[i].status == DownloadStatus.failed) return; // error dialog handled it
-          await _start(items[i]);
-        },
+        onRedownload: () => _redownload(items[i]),
         onRemove: () => state.removeItem(items[i]),
       ),
     );
@@ -376,6 +518,7 @@ class _Toolbar extends StatelessWidget {
     required this.onPaste,
     required this.onPickFolder,
     required this.onPickCookieFile,
+    required this.onSelectBrowser,
     required this.onImport,
     required this.onExport,
   });
@@ -386,192 +529,233 @@ class _Toolbar extends StatelessWidget {
   final VoidCallback onPaste;
   final VoidCallback onPickFolder;
   final VoidCallback onPickCookieFile;
+  final ValueChanged<String> onSelectBrowser;
   final VoidCallback onImport;
   final VoidCallback onExport;
 
   @override
   Widget build(BuildContext context) {
     final isAudio = state.defaultKind == MediaKind.audio;
-    final folderName = state.downloadDir.isEmpty
+    // Compact "C:\Use...ads" form; the full path lives in the tooltip.
+    final folderLabel = state.downloadDir.isEmpty
         ? '…'
-        : state.downloadDir
-            .split(RegExp(r'[/\\]'))
-            .where((e) => e.isNotEmpty)
-            .last;
+        : abbreviatePath(state.downloadDir);
 
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLow,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            FilledButton.icon(
-              onPressed: onPaste,
-              icon: const Icon(Icons.link, size: 18),
-              label: const Text('Paste Link'),
-            ),
-            const SizedBox(width: 4),
-            Tooltip(
-              message: 'Auto-download when a link is added',
-              child: Switch(value: autoDownload, onChanged: onToggleAuto),
-            ),
-            const SizedBox(width: 8),
-            _ToolChip(
-              color: _Palette.downloadBg,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
+            Expanded(
+              // Wrap, not Row: on narrow windows the chips flow onto another
+              // line instead of overflowing (striped overflow bars).
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  Icon(
-                    isAudio
-                        ? Icons.music_note_outlined
-                        : Icons.videocam_outlined,
-                    size: 17,
-                    color: _Palette.downloadFg,
+                  FilledButton.icon(
+                    onPressed: onPaste,
+                    icon: const Icon(Icons.link, size: 18),
+                    label: const Text('Paste Link'),
                   ),
-                  const SizedBox(width: 5),
-                  const Text('Download ',
-                      style: TextStyle(color: _Palette.downloadFg)),
-                  _ChipDropdown<MediaKind>(
-                    value: state.defaultKind,
-                    accent: _Palette.downloadFg,
-                    items: const {
-                      MediaKind.video: 'Video',
-                      MediaKind.audio: 'Audio',
-                    },
-                    onChanged: (v) => state.setDefaultKind(v),
+                  Tooltip(
+                    message: 'Auto-download when a link is added',
+                    child: Switch(value: autoDownload, onChanged: onToggleAuto),
                   ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            // Resolution — greyed out for audio. 0 = "Best" (a null dropdown
-            // value would render blank and be unselectable).
-            Opacity(
-              opacity: isAudio ? 0.45 : 1,
-              child: _ToolChip(
-                color: _Palette.qualityBg,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.tune, size: 17, color: _Palette.qualityFg),
-                    const SizedBox(width: 5),
-                    const Text('Quality ',
-                        style: TextStyle(color: _Palette.qualityFg)),
-                    _ChipDropdown<int>(
-                      value: state.defaultQuality ?? 0,
-                      enabled: !isAudio,
-                      accent: _Palette.qualityFg,
-                      items: {
-                        for (final h in Quality.options)
-                          h ?? 0: Quality.label(h),
-                      },
-                      onChanged: (v) =>
-                          state.setDefaultQuality(v == 0 ? null : v),
+                  _ToolChip(
+                    color: _Palette.downloadBg,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          isAudio
+                              ? Icons.music_note_outlined
+                              : Icons.videocam_outlined,
+                          size: 17,
+                          color: _Palette.downloadFg,
+                        ),
+                        const SizedBox(width: 5),
+                        const Text(
+                          'Download ',
+                          style: TextStyle(color: _Palette.downloadFg),
+                        ),
+                        _ChipDropdown<MediaKind>(
+                          value: state.defaultKind,
+                          accent: _Palette.downloadFg,
+                          items: const {
+                            MediaKind.video: 'Video',
+                            MediaKind.audio: 'Audio',
+                          },
+                          onChanged: (v) => state.setDefaultKind(v),
+                        ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            // Output format: fixed MP4 for video, M4A/MP3 choice for audio.
-            _ToolChip(
-              color: _Palette.formatBg,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.insert_drive_file_outlined,
-                      size: 17, color: _Palette.formatFg),
-                  const SizedBox(width: 5),
-                  const Text('Format ',
-                      style: TextStyle(color: _Palette.formatFg)),
-                  if (isAudio)
-                    _ChipDropdown<String>(
-                      value: state.audioFormat,
-                      accent: _Palette.formatFg,
-                      items: {
-                        for (final f in AudioFormat.options) f: f.toUpperCase(),
-                      },
-                      onChanged: (v) => state.setAudioFormat(v),
-                    )
-                  else
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      child: Text('MP4',
-                          style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              color: _Palette.formatFg)),
+                  ),
+                  // Resolution — greyed out for audio. 0 = "Best" (a null dropdown
+                  // value would render blank and be unselectable).
+                  Opacity(
+                    opacity: isAudio ? 0.45 : 1,
+                    child: _ToolChip(
+                      color: _Palette.qualityBg,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.tune,
+                            size: 17,
+                            color: _Palette.qualityFg,
+                          ),
+                          const SizedBox(width: 5),
+                          const Text(
+                            'Quality ',
+                            style: TextStyle(color: _Palette.qualityFg),
+                          ),
+                          _ChipDropdown<int>(
+                            value: state.defaultQuality ?? 0,
+                            enabled: !isAudio,
+                            accent: _Palette.qualityFg,
+                            items: {
+                              for (final h in Quality.options)
+                                h ?? 0: Quality.label(h),
+                            },
+                            onChanged: (v) =>
+                                state.setDefaultQuality(v == 0 ? null : v),
+                          ),
+                        ],
+                      ),
                     ),
+                  ),
+                  // Output format: fixed MP4 for video, M4A/MP3 choice for audio.
+                  _ToolChip(
+                    color: _Palette.formatBg,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.insert_drive_file_outlined,
+                          size: 17,
+                          color: _Palette.formatFg,
+                        ),
+                        const SizedBox(width: 5),
+                        const Text(
+                          'Format ',
+                          style: TextStyle(color: _Palette.formatFg),
+                        ),
+                        if (isAudio)
+                          _ChipDropdown<String>(
+                            value: state.audioFormat,
+                            accent: _Palette.formatFg,
+                            items: {
+                              for (final f in AudioFormat.options)
+                                f: f.toUpperCase(),
+                            },
+                            onChanged: (v) => state.setAudioFormat(v),
+                          )
+                        else
+                          const Padding(
+                            padding: EdgeInsets.symmetric(vertical: 8),
+                            child: Text(
+                              'MP4',
+                              style: TextStyle(
+                                fontWeight: FontWeight.w600,
+                                color: _Palette.formatFg,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Tooltip(
+                    message: state.downloadDir.isEmpty ? '' : state.downloadDir,
+                    waitDuration: const Duration(milliseconds: 400),
+                    child: _ToolChip(
+                      color: _Palette.folderBg,
+                      child: InkWell(
+                        onTap: onPickFolder,
+                        borderRadius: BorderRadius.circular(20),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.folder_outlined,
+                                size: 17,
+                                color: _Palette.folderFg,
+                              ),
+                              const SizedBox(width: 5),
+                              const Text(
+                                'Save to ',
+                                style: TextStyle(color: _Palette.folderFg),
+                              ),
+                              Text(
+                                folderLabel,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  color: _Palette.folderFg,
+                                ),
+                              ),
+                              const Icon(
+                                Icons.arrow_drop_down,
+                                size: 18,
+                                color: _Palette.folderFg,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  _ToolChip(
+                    color: _Palette.loginBg,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.cookie_outlined,
+                          size: 17,
+                          color: _Palette.loginFg,
+                        ),
+                        const SizedBox(width: 5),
+                        const Text(
+                          'Login ',
+                          style: TextStyle(color: _Palette.loginFg),
+                        ),
+                        _ChipDropdown<String>(
+                          value: state.cookieFilePath != null
+                              ? 'file'
+                              : (state.cookieBrowser ?? 'off'),
+                          accent: _Palette.loginFg,
+                          items: {
+                            'off': 'Off',
+                            'file': state.cookieFilePath == null
+                                ? 'Cookies file…'
+                                : state.cookieFilePath!
+                                      .split(RegExp(r'[/\\]'))
+                                      .last,
+                            'chrome': 'Chrome',
+                            'edge': 'Edge',
+                            'firefox': 'Firefox',
+                          },
+                          onChanged: (v) {
+                            if (v == 'file') {
+                              onPickCookieFile();
+                            } else if (v == 'off') {
+                              state.setCookieBrowser(null);
+                            } else {
+                              onSelectBrowser(v);
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
-            const SizedBox(width: 8),
-            _ToolChip(
-              color: _Palette.folderBg,
-              child: InkWell(
-                onTap: onPickFolder,
-                borderRadius: BorderRadius.circular(20),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.folder_outlined,
-                          size: 17, color: _Palette.folderFg),
-                      const SizedBox(width: 5),
-                      const Text('Save to ',
-                          style: TextStyle(color: _Palette.folderFg)),
-                      Text(folderName,
-                          style: const TextStyle(
-                              fontWeight: FontWeight.w600,
-                              color: _Palette.folderFg)),
-                      const Icon(Icons.arrow_drop_down,
-                          size: 18, color: _Palette.folderFg),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            _ToolChip(
-              color: _Palette.loginBg,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.cookie_outlined,
-                      size: 17, color: _Palette.loginFg),
-                  const SizedBox(width: 5),
-                  const Text('Login ',
-                      style: TextStyle(color: _Palette.loginFg)),
-                  _ChipDropdown<String>(
-                    value: state.cookieFilePath != null
-                        ? 'file'
-                        : (state.cookieBrowser ?? 'off'),
-                    accent: _Palette.loginFg,
-                    items: {
-                      'off': 'Off',
-                      'file': state.cookieFilePath == null
-                          ? 'Cookies file…'
-                          : state.cookieFilePath!
-                              .split(RegExp(r'[/\\]'))
-                              .last,
-                      'chrome': 'Chrome',
-                      'edge': 'Edge',
-                      'firefox': 'Firefox',
-                    },
-                    onChanged: (v) {
-                      if (v == 'file') {
-                        onPickCookieFile();
-                      } else if (v == 'off') {
-                        state.setCookieBrowser(null);
-                      } else {
-                        state.setCookieBrowser(v);
-                      }
-                    },
-                  ),
-                ],
-              ),
-            ),
-            const Spacer(),
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert),
               tooltip: 'More',
@@ -581,15 +765,19 @@ class _Toolbar extends StatelessWidget {
               },
               itemBuilder: (_) => const [
                 PopupMenuItem(
-                    value: 'import',
-                    child: ListTile(
-                        leading: Icon(Icons.file_upload_outlined),
-                        title: Text('Import list…'))),
+                  value: 'import',
+                  child: ListTile(
+                    leading: Icon(Icons.file_upload_outlined),
+                    title: Text('Import list…'),
+                  ),
+                ),
                 PopupMenuItem(
-                    value: 'export',
-                    child: ListTile(
-                        leading: Icon(Icons.file_download_outlined),
-                        title: Text('Export list…'))),
+                  value: 'export',
+                  child: ListTile(
+                    leading: Icon(Icons.file_download_outlined),
+                    title: Text('Export list…'),
+                  ),
+                ),
               ],
             ),
           ],
@@ -679,7 +867,8 @@ class _ChipDropdown<T> extends StatelessWidget {
           // but the closed button must use the accent too.
           for (final e in items.entries)
             Center(
-                child: Text(e.value, style: TextStyle(color: accent))),
+              child: Text(e.value, style: TextStyle(color: accent)),
+            ),
         ],
         onChanged: enabled ? (v) => onChanged(v as T) : null,
       ),
@@ -710,7 +899,8 @@ class _SearchBar extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
       decoration: BoxDecoration(
         border: Border(
-            bottom: BorderSide(color: Theme.of(context).dividerColor)),
+          bottom: BorderSide(color: Theme.of(context).dividerColor),
+        ),
       ),
       child: Row(
         children: [
@@ -738,8 +928,14 @@ class _SearchBar extends StatelessWidget {
             initialValue: sort,
             onSelected: onSort,
             itemBuilder: (_) => const [
-              PopupMenuItem(value: SortMode.newest, child: Text('Newest first')),
-              PopupMenuItem(value: SortMode.oldest, child: Text('Oldest first')),
+              PopupMenuItem(
+                value: SortMode.newest,
+                child: Text('Newest first'),
+              ),
+              PopupMenuItem(
+                value: SortMode.oldest,
+                child: Text('Oldest first'),
+              ),
               PopupMenuItem(value: SortMode.title, child: Text('Title')),
               PopupMenuItem(value: SortMode.size, child: Text('File size')),
             ],
@@ -794,7 +990,9 @@ class _DownloadRow extends StatelessWidget {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(
-                      fontWeight: FontWeight.w500, fontSize: 14),
+                    fontWeight: FontWeight.w500,
+                    fontSize: 14,
+                  ),
                 ),
                 const SizedBox(height: 2),
                 if (downloading)
@@ -805,8 +1003,9 @@ class _DownloadRow extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
-                        fontSize: 12),
+                      color: Theme.of(context).colorScheme.error,
+                      fontSize: 12,
+                    ),
                   )
                 else
                   Text(
@@ -821,37 +1020,43 @@ class _DownloadRow extends StatelessWidget {
           const SizedBox(width: 8),
           if (done)
             _IconBtn(
-                icon: Icons.play_arrow,
-                tip: 'Play',
-                color: _Palette.play,
-                onTap: onPlay),
+              icon: Icons.play_arrow,
+              tip: 'Play',
+              color: _Palette.play,
+              onTap: onPlay,
+            ),
           if (done)
             _IconBtn(
-                icon: Icons.folder_open,
-                tip: 'Open folder',
-                color: _Palette.openFolder,
-                onTap: onFolder),
+              icon: Icons.folder_open,
+              tip: 'Open folder',
+              color: _Palette.openFolder,
+              onTap: onFolder,
+            ),
           if (!downloading)
             _IconBtn(
-                icon: Icons.refresh,
-                tip: failed ? 'Retry' : 'Redownload',
-                color: _Palette.redownload,
-                onTap: onRedownload),
+              icon: Icons.refresh,
+              tip: failed ? 'Retry' : 'Redownload',
+              color: _Palette.redownload,
+              onTap: onRedownload,
+            ),
           _IconBtn(
-              icon: Icons.copy,
-              tip: 'Copy URL',
-              color: _Palette.copy,
-              onTap: onCopyUrl),
+            icon: Icons.copy,
+            tip: 'Copy URL',
+            color: _Palette.copy,
+            onTap: onCopyUrl,
+          ),
           _IconBtn(
-              icon: Icons.open_in_new,
-              tip: 'Open link',
-              color: _Palette.openLink,
-              onTap: onLink),
+            icon: Icons.open_in_new,
+            tip: 'Open link',
+            color: _Palette.openLink,
+            onTap: onLink,
+          ),
           _IconBtn(
-              icon: Icons.delete_outline,
-              tip: 'Remove',
-              color: _Palette.remove,
-              onTap: onRemove),
+            icon: Icons.delete_outline,
+            tip: 'Remove',
+            color: _Palette.remove,
+            onTap: onRemove,
+          ),
         ],
       ),
     );
@@ -878,10 +1083,12 @@ class _Thumb extends StatelessWidget {
       // Missing/broken files fall through to errorBuilder (no existsSync in
       // build: synchronous disk I/O per row per frame).
       child: path != null
-          ? Image.file(File(path),
+          ? Image.file(
+              File(path),
               fit: BoxFit.cover,
               cacheWidth: 128,
-              errorBuilder: (context, error, stack) => _placeholder())
+              errorBuilder: (context, error, stack) => _placeholder(),
+            )
           : _placeholder(),
     );
   }
@@ -921,8 +1128,10 @@ class _ProgressLine extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 8),
-        Text('${(progress * 100).round()}%',
-            style: const TextStyle(fontSize: 12)),
+        Text(
+          '${(progress * 100).round()}%',
+          style: const TextStyle(fontSize: 12),
+        ),
       ],
     );
   }

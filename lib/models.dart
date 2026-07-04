@@ -128,6 +128,22 @@ class DownloadItem {
   }
 }
 
+/// Shortens a filesystem path for tight UI spots: first [head] and last
+/// [tail] characters, e.g. `C:\Users\adamt\Downloads` → `C:\Use...ads`.
+/// The full path belongs in a tooltip next to wherever this is shown.
+String abbreviatePath(String path, {int head = 6, int tail = 3}) {
+  if (path.length <= head + tail + 3) return path;
+  return '${path.substring(0, head)}...${path.substring(path.length - tail)}';
+}
+
+/// Extracts the display version from pubspec.yaml text ("1.2.0+5" → "1.2.0",
+/// the build number is dropped). Returns '' when no version line is found.
+String versionFromPubspec(String yaml) {
+  final m =
+      RegExp(r'^version:\s*([0-9][^\s+]*)', multiLine: true).firstMatch(yaml);
+  return m?.group(1) ?? '';
+}
+
 String _formatDuration(int seconds) {
   final h = seconds ~/ 3600;
   final m = (seconds % 3600) ~/ 60;

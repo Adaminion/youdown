@@ -199,6 +199,23 @@ void main() {
       expect(msg, contains('chrome'));
     });
 
+    test('app-bound (v20) decrypt warnings point to cookies.txt', () {
+      // yt-dlp only WARNs about undecryptable v20 cookies; the final ERROR is
+      // YouTube rejecting the (empty) login. The summary must still name the
+      // real cause.
+      final msg = service.summarizeError(
+        [
+          'WARNING: [youtube] Failed to decrypt 42 cookies as they are in '
+              'v20 format',
+          "ERROR: [youtube] abc: Sign in to confirm you're not a bot.",
+        ],
+        cookieBrowser: 'chrome',
+        loginConfigured: true,
+      );
+      expect(msg, contains('cookies.txt'));
+      expect(msg, contains('app-bound'));
+    });
+
     test('auth-shaped error hints at Login when login is off', () {
       final msg = service.summarizeError(
         ['ERROR: [youtube] abc: This video is not available'],
