@@ -62,8 +62,18 @@ class AppState extends ChangeNotifier {
         final items = json['items'] as List<dynamic>? ?? [];
         _items
           ..clear()
-          ..addAll(items.map(
-              (e) => DownloadItem.fromJson(e as Map<String, dynamic>)));
+          ..addAll(
+            items.map((e) => DownloadItem.fromJson(e as Map<String, dynamic>)),
+          );
+
+        // Flag "done" items whose file is gone (moved/deleted/never landed)
+        // so the UI can show it instead of a false "downloaded".
+        for (final item in _items) {
+          if (item.status == DownloadStatus.done) {
+            item.fileMissing =
+                item.filePath == null || !await File(item.filePath!).exists();
+          }
+        }
       } catch (e) {
         debugPrint('Failed to load state: $e');
       }
@@ -92,8 +102,9 @@ class AppState extends ChangeNotifier {
       'items': _items.map((e) => e.toJson()).toList(),
     };
     try {
-      await _stateFile
-          .writeAsString(const JsonEncoder.withIndent('  ').convert(data));
+      await _stateFile.writeAsString(
+        const JsonEncoder.withIndent('  ').convert(data),
+      );
     } catch (e) {
       debugPrint('Failed to save state: $e');
     }
@@ -174,8 +185,9 @@ class AppState extends ChangeNotifier {
       'youdown_library': 1,
       'items': _items.map((e) => e.toJson()).toList(),
     };
-    await File(path)
-        .writeAsString(const JsonEncoder.withIndent('  ').convert(data));
+    await File(
+      path,
+    ).writeAsString(const JsonEncoder.withIndent('  ').convert(data));
   }
 
   /// Imports items from a previously exported file, skipping ones already

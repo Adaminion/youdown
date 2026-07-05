@@ -12,15 +12,14 @@ void main() {
     int? height,
     String? cookieBrowser,
     String? cookieFile,
-  }) =>
-      service.buildArgs(
-        url: 'https://youtube.com/watch?v=x',
-        kind: kind,
-        outTemplate: r'C:\dl\%(title)s.%(ext)s',
-        height: height,
-        cookieBrowser: cookieBrowser,
-        cookieFile: cookieFile,
-      );
+  }) => service.buildArgs(
+    url: 'https://youtube.com/watch?v=x',
+    kind: kind,
+    outTemplate: r'C:\dl\%(title)s.%(ext)s',
+    height: height,
+    cookieBrowser: cookieBrowser,
+    cookieFile: cookieFile,
+  );
 
   group('format selection', () {
     String fmt(List<String> a) => a[a.indexOf('-f') + 1];
@@ -54,12 +53,14 @@ void main() {
     test('watch URL loses playlist and tracking params', () {
       expect(
         cleanVideoUrl(
-            'https://www.youtube.com/watch?v=ayo-NgC3_Z0&pp=ugUEEgJIbg%3D%3D'),
+          'https://www.youtube.com/watch?v=ayo-NgC3_Z0&pp=ugUEEgJIbg%3D%3D',
+        ),
         'https://www.youtube.com/watch?v=ayo-NgC3_Z0',
       );
       expect(
         cleanVideoUrl(
-            'https://www.youtube.com/watch?v=abc123&list=PLxyz&index=7'),
+          'https://www.youtube.com/watch?v=abc123&list=PLxyz&index=7',
+        ),
         'https://www.youtube.com/watch?v=abc123',
       );
     });
@@ -161,18 +162,17 @@ void main() {
 
   group('error summaries', () {
     test('missing JS runtime hint wins for "not available" errors', () {
-      final msg = service.summarizeError(
-        ['ERROR: [youtube] abc: This video is not available'],
-        jsRuntimeMissing: true,
-      );
+      final msg = service.summarizeError([
+        'ERROR: [youtube] abc: This video is not available',
+      ], jsRuntimeMissing: true);
       expect(msg, contains('install Deno'));
       expect(msg, isNot(contains('set Login'))); // runtime hint takes priority
     });
 
     test('no runtime hint when a runtime is present', () {
-      final msg = service.summarizeError(
-        ['ERROR: [youtube] abc: This video is not available'],
-      );
+      final msg = service.summarizeError([
+        'ERROR: [youtube] abc: This video is not available',
+      ]);
       expect(msg, isNot(contains('install Deno')));
     });
 
@@ -180,7 +180,7 @@ void main() {
       final msg = service.summarizeError(
         [
           'ERROR: Could not copy Chrome cookie database. See '
-              'https://github.com/yt-dlp/yt-dlp/issues/7271 for more info'
+              'https://github.com/yt-dlp/yt-dlp/issues/7271 for more info',
         ],
         cookieBrowser: 'chrome',
         loginConfigured: true,
@@ -217,17 +217,16 @@ void main() {
     });
 
     test('auth-shaped error hints at Login when login is off', () {
-      final msg = service.summarizeError(
-        ['ERROR: [youtube] abc: This video is not available'],
-      );
+      final msg = service.summarizeError([
+        'ERROR: [youtube] abc: This video is not available',
+      ]);
       expect(msg, contains('set Login in the toolbar'));
     });
 
     test('no login hint when login is already configured', () {
-      final msg = service.summarizeError(
-        ['ERROR: [youtube] abc: This video is not available'],
-        loginConfigured: true,
-      );
+      final msg = service.summarizeError([
+        'ERROR: [youtube] abc: This video is not available',
+      ], loginConfigured: true);
       expect(msg, isNot(contains('set Login')));
     });
 
@@ -258,6 +257,37 @@ void main() {
     });
   });
 
+  group('run pipeline', () {
+    test(
+      'run() completes instead of hanging when the process exits fast',
+      () async {
+        // Regression: the pipe-drain wait used to attach asFuture() after the
+        // streams had already closed, which never completes — items sat at
+        // "downloading" forever even though the process was long gone.
+        final svc = DownloadService();
+        svc.binaryOverride = Platform.isWindows
+            ? '${Platform.environment['SystemRoot']}\\System32\\where.exe'
+            : '/bin/ls';
+        final dir = await Directory.systemTemp.createTemp('youdown_run');
+        addTearDown(() => dir.delete(recursive: true));
+        final item = DownloadItem(
+          id: 'run1',
+          url: 'https://example.com/x',
+          kind: MediaKind.video,
+        );
+
+        await svc
+            .run(item, dir: dir.path, height: null, onUpdate: () {})
+            .timeout(const Duration(seconds: 20));
+
+        // The stub isn't yt-dlp, so the download fails — the point is that
+        // run() *returns* and reports a terminal status.
+        expect(item.status, DownloadStatus.failed);
+        expect(item.error, isNotNull);
+      },
+    );
+  });
+
   group('preflight', () {
     test('missing download folder is reported', () async {
       final msg = await service.preflight(dir: r'Q:\no\such\folder');
@@ -269,7 +299,9 @@ void main() {
       addTearDown(() => dir.delete(recursive: true));
       final nonExistentPath = '${dir.path}/nonexistent_cookies_xyz_12345.txt';
       final msg = await service.preflight(
-          dir: dir.path, cookieFile: nonExistentPath);
+        dir: dir.path,
+        cookieFile: nonExistentPath,
+      );
       expect(msg, contains('Cookies file not found'));
       expect(msg, contains(nonExistentPath));
     });
@@ -280,8 +312,9 @@ void main() {
       final cookies = File('${dir.path}/cookies.txt');
       await cookies.writeAsString('# Netscape HTTP Cookie File\n');
       expect(
-          await service.preflight(dir: dir.path, cookieFile: cookies.path),
-          isNull);
+        await service.preflight(dir: dir.path, cookieFile: cookies.path),
+        isNull,
+      );
       expect(await service.preflight(dir: dir.path), isNull);
     });
   });

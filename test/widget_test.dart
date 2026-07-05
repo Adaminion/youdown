@@ -46,6 +46,30 @@ void main() {
     expect(item.subtitle, '00:42 · 6.0 MB · MP4 · 720p · 30fps · klips.funfun');
   });
 
+  test('mid-flight statuses become failed on reload', () {
+    // 'downloading' and 'queued' are valid enum names, so without an explicit
+    // downgrade they reload as forever-spinning progress bars.
+    for (final s in ['downloading', 'queued']) {
+      final item = DownloadItem.fromJson({
+        'id': '1',
+        'url': 'https://x',
+        'kind': 'video',
+        'status': s,
+      });
+      expect(item.status, DownloadStatus.failed, reason: 'status=$s');
+      expect(item.error, contains('Interrupted'));
+    }
+    // Terminal statuses are untouched.
+    final done = DownloadItem.fromJson({
+      'id': '2',
+      'url': 'https://x',
+      'kind': 'video',
+      'status': 'done',
+    });
+    expect(done.status, DownloadStatus.done);
+    expect(done.error, isNull);
+  });
+
   test('abbreviatePath keeps short paths, shortens long ones', () {
     expect(abbreviatePath(r'C:\dl'), r'C:\dl');
     expect(abbreviatePath(r'C:\Users\adamt\Downloads'), r'C:\Use...ads');
@@ -57,12 +81,15 @@ void main() {
     expect(versionFromPubspec('name: x\nversion: 1.2.0\n'), '1.2.0');
     expect(versionFromPubspec('name: x\n'), '');
     // must not match the "like 1.2.43" example in pubspec comments
-    expect(versionFromPubspec('# A version number is 1.2.43\nversion: 2.0.0+1'),
-        '2.0.0');
+    expect(
+      versionFromPubspec('# A version number is 1.2.43\nversion: 2.0.0+1'),
+      '2.0.0',
+    );
   });
 
-  testWidgets('version overlay and abbreviated Save-to path render',
-      (tester) async {
+  testWidgets('version overlay and abbreviated Save-to path render', (
+    tester,
+  ) async {
     final state = AppState();
     state.downloadDir = r'C:\Users\adamt\Downloads';
     await tester.pumpWidget(YouDownApp(state: state, version: '9.9.9'));
@@ -73,7 +100,8 @@ void main() {
     // Full path is available as the chip's tooltip.
     expect(
       find.byWidgetPredicate(
-          (w) => w is Tooltip && w.message == r'C:\Users\adamt\Downloads'),
+        (w) => w is Tooltip && w.message == r'C:\Users\adamt\Downloads',
+      ),
       findsOneWidget,
     );
   });

@@ -62,7 +62,15 @@ class _HomePageState extends State<HomePage> {
       _toast('No valid link found');
       return;
     }
+    // Dedupe: two items for the same URL download to the same output file
+    // and corrupt each other's .part files when they run concurrently.
+    final known = state.items.map((i) => i.url).toSet();
+    var skipped = 0;
     for (final url in urls) {
+      if (!known.add(url)) {
+        skipped++;
+        continue;
+      }
       final item = DownloadItem(
         id: _newId(),
         url: url,
@@ -70,6 +78,12 @@ class _HomePageState extends State<HomePage> {
       );
       state.addItem(item);
       if (_autoDownload) _start(item);
+    }
+    if (skipped > 0) {
+      _toast(
+        'Skipped $skipped link(s) already in the list — '
+        'use ⟳ on the existing item to download again',
+      );
     }
   }
 
@@ -216,6 +230,8 @@ class _HomePageState extends State<HomePage> {
   Future<void> _play(DownloadItem item) async {
     final path = item.filePath;
     if (path == null || !File(path).existsSync()) {
+      item.fileMissing = true;
+      state.touch(item, persist: false);
       _toast(
         'File not found — it may have been moved or deleted. '
         'Use Redownload to fetch it again.',
@@ -997,6 +1013,16 @@ class _DownloadRow extends StatelessWidget {
                 const SizedBox(height: 2),
                 if (downloading)
                   _ProgressLine(progress: item.progress)
+                else if (done && item.fileMissing)
+                  Text(
+                    'file missing on disk — press ⟳ to download again',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Colors.orange.shade800,
+                      fontSize: 12,
+                    ),
+                  )
                 else if (failed)
                   Text(
                     'failed · ${item.error ?? 'unknown error'}',

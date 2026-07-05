@@ -64,11 +64,14 @@ class DownloadItem {
   /// 0.0 .. 1.0, transient while [status] is downloading.
   double progress;
 
+  /// Transient (not persisted): set at startup when a 'done' item's file no
+  /// longer exists on disk, so the UI can say so instead of claiming success.
+  bool fileMissing = false;
+
   final DateTime addedAt;
 
-  String get displayTitle => title?.trim().isNotEmpty == true
-      ? title!.trim()
-      : url;
+  String get displayTitle =>
+      title?.trim().isNotEmpty == true ? title!.trim() : url;
 
   /// Human-readable second line, e.g. "00:42 · 6.1 MB · MP4 · 720p · 30fps · channel".
   String get subtitle {
@@ -83,24 +86,33 @@ class DownloadItem {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'url': url,
-        'kind': kind.name,
-        'title': title,
-        'filePath': filePath,
-        'thumbnailPath': thumbnailPath,
-        'durationSeconds': durationSeconds,
-        'fileSizeBytes': fileSizeBytes,
-        'ext': ext,
-        'height': height,
-        'fps': fps,
-        'uploader': uploader,
-        'status': status.name,
-        'error': error,
-        'addedAt': addedAt.toIso8601String(),
-      };
+    'id': id,
+    'url': url,
+    'kind': kind.name,
+    'title': title,
+    'filePath': filePath,
+    'thumbnailPath': thumbnailPath,
+    'durationSeconds': durationSeconds,
+    'fileSizeBytes': fileSizeBytes,
+    'ext': ext,
+    'height': height,
+    'fps': fps,
+    'uploader': uploader,
+    'status': status.name,
+    'error': error,
+    'addedAt': addedAt.toIso8601String(),
+  };
 
   factory DownloadItem.fromJson(Map<String, dynamic> json) {
+    final parsed = DownloadStatus.values.firstWhere(
+      (s) => s.name == json['status'],
+      orElse: () => DownloadStatus.failed,
+    );
+    // A download can't survive an app restart. 'queued' and 'downloading'
+    // are valid enum names, so they parse fine — they must be explicitly
+    // downgraded to failed or they reload as forever-spinning progress bars.
+    final interrupted =
+        parsed == DownloadStatus.downloading || parsed == DownloadStatus.queued;
     return DownloadItem(
       id: json['id'] as String,
       url: json['url'] as String,
@@ -117,12 +129,11 @@ class DownloadItem {
       height: json['height'] as int?,
       fps: (json['fps'] as num?)?.toDouble(),
       uploader: json['uploader'] as String?,
-      status: DownloadStatus.values.firstWhere(
-        (s) => s.name == json['status'],
-        // Anything previously mid-flight is treated as failed on reload.
-        orElse: () => DownloadStatus.failed,
-      ),
-      error: json['error'] as String?,
+      status: interrupted ? DownloadStatus.failed : parsed,
+      error: interrupted
+          ? 'Interrupted — the app was closed during download. '
+                'Press Retry to download again.'
+          : json['error'] as String?,
       addedAt: DateTime.tryParse(json['addedAt'] as String? ?? ''),
     );
   }
@@ -139,8 +150,10 @@ String abbreviatePath(String path, {int head = 6, int tail = 3}) {
 /// Extracts the display version from pubspec.yaml text ("1.2.0+5" → "1.2.0",
 /// the build number is dropped). Returns '' when no version line is found.
 String versionFromPubspec(String yaml) {
-  final m =
-      RegExp(r'^version:\s*([0-9][^\s+]*)', multiLine: true).firstMatch(yaml);
+  final m = RegExp(
+    r'^version:\s*([0-9][^\s+]*)',
+    multiLine: true,
+  ).firstMatch(yaml);
   return m?.group(1) ?? '';
 }
 

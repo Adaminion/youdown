@@ -102,8 +102,9 @@ class DownloadService {
       }
     }
     try {
-      final r = await Process.run(
-          Platform.isWindows ? 'where' : 'which', ['deno']);
+      final r = await Process.run(Platform.isWindows ? 'where' : 'which', [
+        'deno',
+      ]);
       if (r.exitCode == 0) {
         final p = (r.stdout as String)
             .trim()
@@ -126,6 +127,10 @@ class DownloadService {
     }
     return (asset: 'assets/yt-dlp', name: 'yt-dlp');
   }
+
+  /// Test hook: skip asset extraction and run this executable instead.
+  @visibleForTesting
+  set binaryOverride(String path) => _binPath = path;
 
   /// Copies the bundled binary out of the asset bundle (you can't exec assets
   /// directly) and returns its path. Cached after the first call.
@@ -197,11 +202,22 @@ class DownloadService {
       // native YouTube format), and guarantees an audio file even when the
       // selector fell back to a muxed video stream. Already-m4a downloads
       // are left untouched by ffmpeg.
-      if (audio) ...['-x', '--audio-format', audioFormat, '--audio-quality', '0'],
+      if (audio) ...[
+        '-x',
+        '--audio-format',
+        audioFormat,
+        '--audio-quality',
+        '0',
+      ],
       if (jsRuntime != null) ...['--js-runtimes', jsRuntime],
       // YouTube login: an exported cookies.txt wins over live browser cookies.
-      if (cookieFile != null) ...['--cookies', cookieFile]
-      else if (cookieBrowser != null) ...['--cookies-from-browser', cookieBrowser],
+      if (cookieFile != null) ...[
+        '--cookies',
+        cookieFile,
+      ] else if (cookieBrowser != null) ...[
+        '--cookies-from-browser',
+        cookieBrowser,
+      ],
       '--no-playlist',
       '--newline',
       '--progress',
@@ -308,31 +324,42 @@ class DownloadService {
           .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
-        if (line.startsWith('YDFILE\t')) {
-          finalFile = line.substring('YDFILE\t'.length).trim();
-        }
-        _maybeProgress(line, item, onProgressTick);
-      });
+            if (line.startsWith('YDFILE\t')) {
+              finalFile = line.substring('YDFILE\t'.length).trim();
+            }
+            _maybeProgress(line, item, onProgressTick);
+          });
 
       final stderrSub = proc.stderr
           .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen((line) {
-        _maybeProgress(line, item, onProgressTick);
-        if (!line.startsWith('YDPROG')) {
-          errBuffer.add(line);
-          if (errBuffer.length > 40) errBuffer.removeAt(0);
-        }
-      });
+            _maybeProgress(line, item, onProgressTick);
+            if (!line.startsWith('YDPROG')) {
+              errBuffer.add(line);
+              if (errBuffer.length > 40) errBuffer.removeAt(0);
+            }
+          });
+
+      // Capture the pipe-completion futures NOW, before awaiting exitCode:
+      // the pipes usually close *before* exitCode resolves, and an asFuture()
+      // attached after a stream is already done never completes — the item
+      // would hang at "downloading" forever and leak its download slot.
+      final stdoutDone = stdoutSub.asFuture<void>().catchError((_) {});
+      final stderrDone = stderrSub.asFuture<void>().catchError((_) {});
 
       final code = await proc.exitCode;
-      // exitCode can complete before the last buffered pipe lines are
-      // delivered; without this wait the YDFILE line is often missed and the
-      // item ends up "done" with no file path recorded.
-      await Future.wait([
-        stdoutSub.asFuture<void>().catchError((_) {}),
-        stderrSub.asFuture<void>().catchError((_) {}),
-      ]);
+      // Drain remaining buffered lines (the YDFILE path arrives here). The
+      // timeout is a safety net for a child process holding the pipes open
+      // after yt-dlp itself exited.
+      await Future.wait([stdoutDone, stderrDone]).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          stdoutSub.cancel();
+          stderrSub.cancel();
+          return const <void>[];
+        },
+      );
       if (code == 0) {
         await _applyMetadata(item, finalFile);
         final onDisk =
@@ -340,6 +367,7 @@ class DownloadService {
         if (onDisk) {
           item.progress = 1.0;
           item.status = DownloadStatus.done;
+          item.fileMissing = false;
         } else {
           // exit 0 but nothing to show: don't claim success over a missing file.
           item.status = DownloadStatus.failed;
@@ -368,12 +396,17 @@ class DownloadService {
     onUpdate();
   }
 
-  void _maybeProgress(String line, DownloadItem item, void Function() onUpdate) {
+  void _maybeProgress(
+    String line,
+    DownloadItem item,
+    void Function() onUpdate,
+  ) {
     if (!line.startsWith('YDPROG')) return;
     final parts = line.split('\t');
     if (parts.length < 4) return;
     final done = double.tryParse(parts[1]);
-    final total = double.tryParse(parts[2]) ??
+    final total =
+        double.tryParse(parts[2]) ??
         double.tryParse(parts[3]); // estimate fallback
     if (done != null && total != null && total > 0) {
       final p = (done / total).clamp(0.0, 1.0);
@@ -408,10 +441,12 @@ class DownloadService {
         item.durationSeconds = (j['duration'] as num?)?.round();
         item.height = (j['height'] as num?)?.toInt();
         item.fps = (j['fps'] as num?)?.toDouble();
-        item.uploader = (j['uploader'] ??
-                j['channel'] ??
-                j['extractor_key'] ??
-                j['webpage_url_domain']) as String?;
+        item.uploader =
+            (j['uploader'] ??
+                    j['channel'] ??
+                    j['extractor_key'] ??
+                    j['webpage_url_domain'])
+                as String?;
       } catch (e) {
         debugPrint('info.json parse failed: $e');
       }
@@ -451,14 +486,13 @@ class DownloadService {
       msg = exc.isNotEmpty
           ? 'yt-dlp crashed: ${exc.trim()}'
           : 'yt-dlp crashed unexpectedly — check that the download folder '
-              'and cookies file paths still exist.';
+                'and cookies file paths still exist.';
     }
 
     // Without a JS runtime yt-dlp misses most YouTube formats and even
     // misreports videos as unavailable. Point at the actual fix.
     if (jsRuntimeMissing &&
-        (msg.contains('not available') ||
-            msg.contains('Requested format'))) {
+        (msg.contains('not available') || msg.contains('Requested format'))) {
       return '$msg — no JS runtime found; install Deno '
           '(winget install DenoLand.Deno) and retry.';
     }
@@ -486,11 +520,13 @@ class DownloadService {
     final chromiumLogin = cookieBrowser == 'chrome' || cookieBrowser == 'edge';
     if (chromiumLogin &&
         (msg.contains('Sign in') || msg.contains('cookies')) &&
-        err.any((l) =>
-            l.contains('v20') ||
-            l.contains('decrypt') ||
-            l.contains('App Bound') ||
-            l.contains('app-bound'))) {
+        err.any(
+          (l) =>
+              l.contains('v20') ||
+              l.contains('decrypt') ||
+              l.contains('App Bound') ||
+              l.contains('app-bound'),
+        )) {
       return "YouTube didn't accept $cookieBrowser cookies — Chrome/Edge "
           'encrypt them on Windows (app-bound encryption), even when the '
           'browser is closed. Switch Login to a cookies.txt file exported '
@@ -503,7 +539,8 @@ class DownloadService {
             msg.contains('members-only') ||
             msg.contains('age-restricted') ||
             msg.contains('not available'))) {
-      msg = '$msg — if this video needs your account, set Login in the toolbar.';
+      msg =
+          '$msg — if this video needs your account, set Login in the toolbar.';
     }
     return msg;
   }
