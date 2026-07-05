@@ -216,6 +216,29 @@ void main() {
       expect(msg, contains('app-bound'));
     });
 
+    test('missing firefox profile gets install/sign-in guidance', () {
+      final msg = service.summarizeError(
+        [
+          "ERROR: could not find firefox cookies database in "
+              "'C:\\Users\\x\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles'",
+        ],
+        cookieBrowser: 'firefox',
+        loginConfigured: true,
+      );
+      expect(msg, contains('Firefox'));
+      expect(msg, contains('cookies.txt'));
+    });
+
+    test('rotated cookies point to a fresh private-window export', () {
+      final msg = service.summarizeError([
+        'ERROR: The provided YouTube account cookies are no longer valid. '
+            'They have likely been rotated in the browser as a security '
+            'measure.',
+      ], loginConfigured: true);
+      expect(msg, contains('Re-export'));
+      expect(msg, contains('private/incognito'));
+    });
+
     test('auth-shaped error hints at Login when login is off', () {
       final msg = service.summarizeError([
         'ERROR: [youtube] abc: This video is not available',
@@ -286,6 +309,51 @@ void main() {
         expect(item.error, isNotNull);
       },
     );
+  });
+
+  group('locateOutput fallback', () {
+    test(
+      'finds the media file via info.json when stdout path is unusable',
+      () async {
+        // Simulates the codepage-mangling case: yt-dlp wrote correct files to
+        // disk but the YDFILE stdout line was garbled.
+        final svc = DownloadService();
+        final dir = await Directory.systemTemp.createTemp('youdown_locate');
+        addTearDown(() => dir.delete(recursive: true));
+
+        const title = 'Krajský přebor Zlínského kraje 2014';
+        final media = File('${dir.path}/$title.mp4');
+        await media.writeAsString('fake video');
+        await File('${dir.path}/$title.info.json').writeAsString(
+          '{"id": "gXcP_0lMaHc", "title": "$title", "ext": "mp4"}',
+        );
+        // An unrelated older-looking info.json must not match.
+        await File(
+          '${dir.path}/Other Video.info.json',
+        ).writeAsString('{"id": "zzzzzzzzzzz", "ext": "mp4"}');
+
+        final found = await svc.locateOutput(
+          url: 'https://www.youtube.com/watch?v=gXcP_0lMaHc',
+          dir: dir.path,
+          since: DateTime.now().subtract(const Duration(seconds: 30)),
+        );
+        // Normalize separators: the scan returns OS-native `\` paths.
+        String norm(String? p) => p?.replaceAll('/', r'\') ?? '';
+        expect(norm(found), norm(media.path));
+      },
+    );
+
+    test('returns null when nothing matches', () async {
+      final svc = DownloadService();
+      final dir = await Directory.systemTemp.createTemp('youdown_locate2');
+      addTearDown(() => dir.delete(recursive: true));
+      final found = await svc.locateOutput(
+        url: 'https://www.youtube.com/watch?v=gXcP_0lMaHc',
+        dir: dir.path,
+        since: DateTime.now(),
+      );
+      expect(found, isNull);
+    });
   });
 
   group('preflight', () {

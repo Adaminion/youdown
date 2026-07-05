@@ -182,18 +182,21 @@ class _HomePageState extends State<HomePage> {
       return false;
     }
 
-    // Browser cookies unreadable (locked DB / Chrome-Edge encryption).
-    if (state.cookieBrowser != null &&
+    // Login problems: browser cookies unreadable (locked DB / Chrome-Edge
+    // encryption / missing Firefox profile) or an exported cookies.txt that
+    // YouTube no longer accepts.
+    if ((state.cookieBrowser != null || state.cookieFilePath != null) &&
         err.contains('cookies') &&
         (err.contains('decrypt') ||
             err.contains('close ') ||
-            err.contains('cookies.txt'))) {
+            err.contains('cookies.txt') ||
+            err.contains('rotated'))) {
       final result = await showDialog<String>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Browser Login Failed'),
+          title: const Text('Login Failed'),
           content: Text(
-            '$err\n\nAn exported cookies.txt file is the most '
+            '$err\n\nA freshly exported cookies.txt file is the most '
             'reliable way to stay logged in.',
           ),
           actions: [

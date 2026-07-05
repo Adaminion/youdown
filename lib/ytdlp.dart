@@ -316,7 +316,16 @@ class DownloadService {
         cookieFile: runCookieFile,
         jsRuntime: jsRuntime,
       );
-      final proc = await Process.start(bin, args, workingDirectory: dir);
+      final startedAt = DateTime.now();
+      final proc = await Process.start(
+        bin,
+        args,
+        workingDirectory: dir,
+        // Force UTF-8 stdio: yt-dlp otherwise prints in the Windows system
+        // codepage, which garbles accented characters in the YDFILE path —
+        // the app then can't find a file that downloaded just fine.
+        environment: const {'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'},
+      );
 
       // allowMalformed: a single non-UTF8 byte in output must not kill the
       // listener (a dead listener blocks the pipe and hangs the download).
@@ -361,6 +370,14 @@ class DownloadService {
         },
       );
       if (code == 0) {
+        // The printed path can still be unusable (mangled by a decode error
+        // or never emitted). The files on disk are always written correctly,
+        // so fall back to locating the output via its .info.json.
+        if (finalFile == null || !await File(finalFile!).exists()) {
+          finalFile =
+              await locateOutput(url: item.url, dir: dir, since: startedAt) ??
+              finalFile;
+        }
         await _applyMetadata(item, finalFile);
         final onDisk =
             item.filePath != null && await File(item.filePath!).exists();
@@ -372,8 +389,8 @@ class DownloadService {
           // exit 0 but nothing to show: don't claim success over a missing file.
           item.status = DownloadStatus.failed;
           item.error =
-              'Finished, but no output file was found in $dir — check free '
-              'space and retry.';
+              'Finished, but the output file could not be located in $dir — '
+              'press ⟳ to retry.';
         }
       } else {
         item.status = DownloadStatus.failed;
@@ -394,6 +411,71 @@ class DownloadService {
       } catch (_) {}
     }
     onUpdate();
+  }
+
+  /// Locates a just-downloaded media file by scanning the download dir for
+  /// fresh `.info.json` files and matching them to [url] (by video id or
+  /// webpage_url). Used when the YDFILE path from stdout is missing or
+  /// mangled — files on disk are always written with correct names.
+  @visibleForTesting
+  Future<String?> locateOutput({
+    required String url,
+    required String dir,
+    required DateTime since,
+  }) async {
+    try {
+      final cleaned = cleanVideoUrl(url);
+      final cutoff = since.subtract(const Duration(minutes: 1));
+
+      final infos = <(File, DateTime)>[];
+      await for (final e in Directory(dir).list()) {
+        if (e is! File || !e.path.endsWith('.info.json')) continue;
+        final mtime = await e.lastModified();
+        if (mtime.isAfter(cutoff)) infos.add((e, mtime));
+      }
+      infos.sort((a, b) => b.$2.compareTo(a.$2)); // newest first
+
+      for (final (f, _) in infos) {
+        Map<String, dynamic> j;
+        try {
+          j = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+        } catch (_) {
+          continue;
+        }
+        final id = j['id']?.toString();
+        final webpageUrl = j['webpage_url']?.toString();
+        final matches =
+            (id != null && id.length >= 5 && cleaned.contains(id)) ||
+            (webpageUrl != null &&
+                (webpageUrl == cleaned ||
+                    cleanVideoUrl(webpageUrl) == cleaned));
+        if (!matches) continue;
+
+        // Prefer the exact path yt-dlp recorded, then derive from the
+        // info.json's own filename.
+        for (final key in ['filepath', '_filename', 'filename']) {
+          final p = j[key]?.toString();
+          if (p != null && await File(p).exists()) return p;
+        }
+        final base = f.path.substring(0, f.path.length - '.info.json'.length);
+        final ext = j['ext']?.toString();
+        for (final e in [
+          ?ext,
+          'mp4',
+          'm4a',
+          'mp3',
+          'webm',
+          'mkv',
+          'opus',
+        ]) {
+          final c = File('$base.$e');
+          if (await c.exists()) return c.path;
+        }
+      }
+    } catch (e) {
+      debugPrint('locateOutput failed: $e');
+    }
+    return null;
   }
 
   void _maybeProgress(
@@ -531,6 +613,21 @@ class DownloadService {
           'encrypt them on Windows (app-bound encryption), even when the '
           'browser is closed. Switch Login to a cookies.txt file exported '
           'with a "Get cookies.txt" extension, or use Firefox.';
+    }
+    // Firefox selected but no profile on disk (not installed, or installed
+    // but never launched/signed in).
+    if (msg.toLowerCase().contains('could not find') &&
+        msg.toLowerCase().contains('firefox cookies database')) {
+      return 'No Firefox profile found — install Firefox, sign in to YouTube '
+          'in it once, then retry. Or switch Login to a cookies.txt file.';
+    }
+    // YouTube rotated/invalidated the exported cookies (it does this when
+    // the browser session they came from keeps being used).
+    if (msg.contains('no longer valid')) {
+      return 'YouTube rejected the saved cookies (they were rotated). '
+          'Re-export cookies.txt: sign in to YouTube in a private/incognito '
+          'window, export cookies with the extension, then close that window '
+          'without logging out.';
     }
     // Auth-shaped failures: point at the Login setting if it's off.
     if (!loginConfigured &&
