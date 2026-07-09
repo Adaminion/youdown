@@ -218,6 +218,8 @@ class DownloadService {
         '--cookies-from-browser',
         cookieBrowser,
       ],
+      '--restrict-filenames', // emoji/special chars → safe ASCII
+      '--windows-filenames', // Windows-safe: no pipes, colons, etc.
       '--no-playlist',
       '--newline',
       '--progress',
