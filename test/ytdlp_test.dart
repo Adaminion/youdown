@@ -15,7 +15,7 @@ void main() {
   }) => service.buildArgs(
     url: 'https://youtube.com/watch?v=x',
     kind: kind,
-    outTemplate: r'C:\dl\%(title)s.%(ext)s',
+    outTemplate: r'C:\dl\%(title).80s.%(ext)s',
     height: height,
     cookieBrowser: cookieBrowser,
     cookieFile: cookieFile,
@@ -98,7 +98,7 @@ void main() {
       final a = service.buildArgs(
         url: 'https://www.youtube.com/watch?v=Qs9XrrjuFn8&list=LL&index=2',
         kind: MediaKind.video,
-        outTemplate: r'C:\dl\%(title)s.%(ext)s',
+        outTemplate: r'C:\dl\%(title).80s.%(ext)s',
         height: null,
       );
       expect(a.first, 'https://www.youtube.com/watch?v=Qs9XrrjuFn8');
@@ -109,7 +109,7 @@ void main() {
       final mp3 = service.buildArgs(
         url: 'https://youtube.com/watch?v=x',
         kind: MediaKind.audio,
-        outTemplate: r'C:\dl\%(title)s.%(ext)s',
+        outTemplate: r'C:\dl\%(title).80s.%(ext)s',
         height: null,
         audioFormat: 'mp3',
       );
@@ -146,7 +146,7 @@ void main() {
       final a = service.buildArgs(
         url: 'https://youtube.com/watch?v=x',
         kind: MediaKind.video,
-        outTemplate: r'C:\dl\%(title)s.%(ext)s',
+        outTemplate: r'C:\dl\%(title).80s.%(ext)s',
         height: null,
         jsRuntime: r'deno:C:\tools\deno.exe',
       );

@@ -311,7 +311,9 @@ class DownloadService {
       final args = buildArgs(
         url: item.url,
         kind: item.kind,
-        outTemplate: '$dir${Platform.pathSeparator}%(title)s.%(ext)s',
+        // Truncate titles to 80 chars to stay under Windows's 260-char path
+        // limit (80 chars + folder path + extension).
+        outTemplate: '$dir${Platform.pathSeparator}%(title).80s.%(ext)s',
         height: height,
         audioFormat: audioFormat,
         cookieBrowser: cookieBrowser,
